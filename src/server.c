@@ -7322,6 +7322,7 @@ struct redisTest {
     {"fwtree", fwtreeTest},
     {"estore", estoreTest},
     {"ebuckets", ebucketsTest},
+    {"rax", raxTest},
 };
 redisTestProc *getTestProcByName(const char *name) {
     int numtests = sizeof(redisTests)/sizeof(struct redisTest);
