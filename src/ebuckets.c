@@ -965,7 +965,7 @@ static int ebRemoveFromRax(ebuckets *eb, EbucketsType *type, eItem item) {
         raxStop(&ri);
 
         /* If last bucket in rax, then delete the rax */
-        if (rax->numele == 0) {
+        if (raxSize(rax) == 0) {
             raxFree(rax);
             *eb = NULL;
             return 1; /* removed */

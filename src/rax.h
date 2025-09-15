@@ -110,17 +110,18 @@ typedef struct raxNode {
     unsigned char data[];
 } raxNode;
 
-/* Bit flags used by rax */
+/* Bit flags used by rax, stored in the highest bits of numele */
 #define RAX_FLAGS_BITS 1               /* Number of flags bits */
-#define RAX_ACCOUNT_ALLOC_SIZE (1U<<0) /* If set, total allocation size is
-                                        * stored in the first sizeof(size_t)
-                                        * bytes of the metadata */
-#define RAX_FLAGS_MASK ((1U<<RAX_FLAGS_BITS)-1)
+#define RAX_FLAGS_OFFSET (64-RAX_FLAGS_BITS) /* Offset in numele of flags bits */
+#define RAX_ACCOUNT_ALLOC_SIZE (1ULL<<63) /* If set, total allocation size is
+                                           * stored in the first sizeof(size_t)
+                                           * bytes of the metadata */
+#define RAX_FLAGS_MASK (((1ULL<<RAX_FLAGS_BITS)-1)<<RAX_FLAGS_OFFSET)
+#define RAX_NUMELE_MASK (~RAX_FLAGS_MASK)
 
 typedef struct rax {
     raxNode *head;
-    uint8_t flags:RAX_FLAGS_BITS;
-    uint64_t numele:64-RAX_FLAGS_BITS;
+    uint64_t numele;
     uint64_t numnodes;
     void *metadata[];
 } rax;
@@ -177,7 +178,7 @@ typedef struct raxIterator {
 
 /* Exported API. */
 rax *raxNew(void);
-rax *raxNewWithMetadata(int flags, int metaSize);
+rax *raxNewWithMetadata(uint64_t flags, int metaSize);
 int raxInsert(rax *rax, unsigned char *s, size_t len, void *data, void **old);
 int raxTryInsert(rax *rax, unsigned char *s, size_t len, void *data, void **old);
 int raxRemove(rax *rax, unsigned char *s, size_t len, void **old);

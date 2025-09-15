@@ -43,7 +43,7 @@ void lazyfreeFreeDatabase(void *args[]) {
 /* Release the key tracking table. */
 void lazyFreeTrackingTable(void *args[]) {
     rax *rt = args[0];
-    size_t len = rt->numele;
+    size_t len = raxSize(rt);
     freeTrackingRadixTree(rt);
     atomicDecr(lazyfree_objects,len);
     atomicIncr(lazyfreed_objects,len);
@@ -52,7 +52,7 @@ void lazyFreeTrackingTable(void *args[]) {
 /* Release the error stats rax tree. */
 void lazyFreeErrors(void *args[]) {
     rax *errors = args[0];
-    size_t len = errors->numele;
+    size_t len = raxSize(errors);
     raxFreeWithCallback(errors, zfree);
     atomicDecr(lazyfree_objects,len);
     atomicIncr(lazyfreed_objects,len);
@@ -219,7 +219,7 @@ void emptyDbAsync(redisDb *db) {
 void freeTrackingRadixTreeAsync(rax *tracking) {
     /* Because this rax has only keys and no values so we use numnodes. */
     if (tracking->numnodes > LAZYFREE_THRESHOLD) {
-        atomicIncr(lazyfree_objects,tracking->numele);
+        atomicIncr(lazyfree_objects,raxSize(tracking));
         bioCreateLazyFreeJob(lazyFreeTrackingTable,1,tracking);
     } else {
         freeTrackingRadixTree(tracking);
@@ -231,7 +231,7 @@ void freeTrackingRadixTreeAsync(rax *tracking) {
 void freeErrorsRadixTreeAsync(rax *errors) {
     /* Because this rax has only keys and no values so we use numnodes. */
     if (errors->numnodes > LAZYFREE_THRESHOLD) {
-        atomicIncr(lazyfree_objects,errors->numele);
+        atomicIncr(lazyfree_objects,raxSize(errors));
         bioCreateLazyFreeJob(lazyFreeErrors,1,errors);
     } else {
         raxFreeWithCallback(errors, zfree);

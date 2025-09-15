@@ -4493,7 +4493,7 @@ void incrementErrorCount(const char *fullerr, size_t namelen) {
 
     void *result;
     if (!raxFind(server.errors,(unsigned char*)fullerr,namelen,&result)) {
-        if (server.errors->numele >= ERROR_STATS_NUMBER) {
+        if (raxSize(server.errors) >= ERROR_STATS_NUMBER) {
             sds errors = sdsempty();
             raxIterator ri;
             raxStart(&ri, server.errors);
