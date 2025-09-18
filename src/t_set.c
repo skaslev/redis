@@ -479,6 +479,22 @@ unsigned long setTypeSize(const robj *subject) {
     }
 }
 
+size_t setTypeAllocSize(const robj *o) {
+    debugServerAssertWithInfo(NULL,o,o->type == OBJ_SET);
+    size_t size = 0;
+    if (o->encoding == OBJ_ENCODING_HT) {
+        dict *d = o->ptr;
+        size += sizeof(dict) + dictMemUsage(d) + *htGetMetadataSize(d);
+    } else if (o->encoding == OBJ_ENCODING_INTSET) {
+        size = intsetAllocSize(o->ptr);
+    } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        size = lpBytes(o->ptr);
+    } else {
+        serverPanic("Unknown set encoding");
+    }
+    return size;
+}
+
 /* Convert the set to specified encoding. The resulting dict (when converting
  * to a hash table) is presized to hold the number of elements in the original
  * set. */
@@ -606,12 +622,16 @@ void saddCommand(client *c) {
         robj *o = setTypeCreate(c->argv[2]->ptr, c->argc - 2);
         set = dbAddByLink(c->db, c->argv[1], &o, &link);
     } else {
+        size_t oldsize = setTypeAllocSize(set);
         setTypeMaybeConvert(set, c->argc - 2);
+        updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, setTypeAllocSize(set));
     }
 
+    size_t oldsize = setTypeAllocSize(set);
     for (j = 2; j < c->argc; j++) {
         if (setTypeAdd(set,c->argv[j]->ptr)) added++;
     }
+    updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, setTypeAllocSize(set));
     if (added) {
         unsigned long size = setTypeSize(set);
         updateKeysizesHist(c->db, getKeySlot(c->argv[1]->ptr), OBJ_SET, size - added, size);
@@ -630,17 +650,21 @@ void sremCommand(client *c) {
         return;
 
     unsigned long oldSize = setTypeSize(set);
+    size_t oldsize = setTypeAllocSize(set);
 
     for (j = 2; j < c->argc; j++) {
         if (setTypeRemove(set,c->argv[j]->ptr)) {
             deleted++;
             if (setTypeSize(set) == 0) {
+                updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, setTypeAllocSize(set));
                 dbDeleteSkipKeysizesUpdate(c->db, c->argv[1]);
                 keyremoved = 1;
                 break;
             }
         }
     }
+    if (!keyremoved)
+        updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, setTypeAllocSize(set));
     if (deleted) {
         int64_t newSize = oldSize - deleted;
 
@@ -681,8 +705,11 @@ void smoveCommand(client *c) {
         return;
     }
 
+    size_t oldSrcAllocSize = setTypeAllocSize(srcset);
+    int deleted = setTypeRemove(srcset,ele->ptr);
+    updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldSrcAllocSize, setTypeAllocSize(srcset));
     /* If the element cannot be removed from the src set, return 0. */
-    if (!setTypeRemove(srcset,ele->ptr)) {
+    if (!deleted) {
         addReply(c,shared.czero);
         return;
     }
@@ -708,6 +735,7 @@ void smoveCommand(client *c) {
     signalModifiedKey(c,c->db,c->argv[1]);
     server.dirty++;
 
+    size_t oldDstAllocSize = setTypeAllocSize(dstset);
     /* An extra key has changed when ele was successfully added to dstset */
     if (setTypeAdd(dstset,ele->ptr)) {
         unsigned long dstLen = setTypeSize(dstset);
@@ -716,6 +744,7 @@ void smoveCommand(client *c) {
         signalModifiedKey(c,c->db,c->argv[2]);
         notifyKeyspaceEvent(NOTIFY_SET,"sadd",c->argv[2],c->db->id);
     }
+    updateAllocSizes(c->db, getKeySlot(c->argv[2]->ptr), oldDstAllocSize, setTypeAllocSize(dstset));
     addReply(c,shared.cone);
 }
 
@@ -838,6 +867,7 @@ void spopWithCountCommand(client *c) {
         set->encoding == OBJ_ENCODING_LISTPACK)
     {
         /* Specialized case for listpack. Traverse it only once. */
+        size_t oldsize = setTypeAllocSize(set);
         unsigned char *lp = set->ptr;
         unsigned char *p = lpFirst(lp);
         unsigned int index = 0;
@@ -872,7 +902,9 @@ void spopWithCountCommand(client *c) {
         zfree(ps);
         set->ptr = lp;
         updateKeysizesHist(c->db, getKeySlot(c->argv[1]->ptr), OBJ_SET, size, size - count);
+        updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, setTypeAllocSize(set));
     } else if (remaining*SPOP_MOVE_STRATEGY_MUL > count) {
+        size_t oldsize = setTypeAllocSize(set);
         for (unsigned long i = 0; i < count; i++) {
             propargv[propindex] = setTypePopRandom(set);
             addReplyBulk(c, propargv[propindex]);
@@ -887,6 +919,7 @@ void spopWithCountCommand(client *c) {
             }
         }
         updateKeysizesHist(c->db, getKeySlot(c->argv[1]->ptr), OBJ_SET, size, size - count);
+        updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, setTypeAllocSize(set));
     } else {
     /* CASE 3: The number of elements to return is very big, approaching
      * the size of the set itself. After some time extracting random elements
@@ -897,6 +930,7 @@ void spopWithCountCommand(client *c) {
      * set). Then we return the elements left in the original set and
      * release it. */
         robj *newset = NULL;
+        size_t oldsize = setTypeAllocSize(set);
 
         /* Create a new set with just the remaining elements. */
         if (set->encoding == OBJ_ENCODING_LISTPACK) {
@@ -928,6 +962,7 @@ void spopWithCountCommand(client *c) {
                 setTypeRemoveAux(set, str, len, llele, encoding == OBJ_ENCODING_HT);
             }
         }
+        updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, setTypeAllocSize(set));
 
         /* Transfer the old set to the client. */
         setTypeIterator *si;
@@ -997,8 +1032,12 @@ void spopCommand(client *c) {
     size = setTypeSize(kv);
     updateKeysizesHist(c->db, getKeySlot(c->argv[1]->ptr), OBJ_SET, size, size-1);
 
+    size_t oldsize = setTypeAllocSize(kv);
+
     /* Pop a random element from the kv */
     ele = setTypePopRandom(kv);
+
+    updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, setTypeAllocSize(kv));
 
     notifyKeyspaceEvent(NOTIFY_SET,"spop",c->argv[1],c->db->id);
 
@@ -1744,5 +1783,7 @@ void sscanCommand(client *c) {
     if (parseScanCursorOrReply(c,c->argv[2],&cursor) == C_ERR) return;
     if ((set = lookupKeyReadOrReply(c,c->argv[1],shared.emptyscan)) == NULL ||
         checkType(c,set,OBJ_SET)) return;
+    size_t oldsize = setTypeAllocSize(set);
     scanGenericCommand(c,set,cursor);
+    updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, setTypeAllocSize(set));
 }
