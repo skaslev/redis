@@ -1893,8 +1893,8 @@ void zaddGenericCommand(client *c, int flags) {
         ele = c->argv[scoreidx+1+j*2]->ptr;
         int retval = zsetAdd(zobj, score, ele, flags, &retflags, &newscore);
         if (retval == 0) {
-            updateAllocSizes(c->db, getKeySlot(key->ptr), oldsize, zsetAllocSize(zobj));
             addReplyError(c,nanerr);
+            updateAllocSizes(c->db, getKeySlot(key->ptr), oldsize, zsetAllocSize(zobj));
             goto cleanup;
         }
         if (retflags & ZADD_OUT_ADDED) added++;
@@ -2937,8 +2937,7 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
     }
     for (i = 0; i < setnum; i++) {
         robj *obj = src[i].subject;
-        if (obj == NULL)
-            continue;
+        if (obj == NULL) continue;
         updateAllocSizes(c->db, getKeySlot(kvobjGetKey(obj)),
                          src[i].oldsize, zuiAllocSize(&src[i]));
     }
@@ -4353,8 +4352,7 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
             zfree(keys);
             zfree(vals);
         }
-        updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, zsetAllocSize(zsetobj));
-        return;
+        goto out;
     }
 
     zsetopsrc src;
@@ -4384,8 +4382,7 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
                 addReplyDouble(c, zval.score);
         }
         zuiClearIterator(&src);
-        updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, zsetAllocSize(zsetobj));
-        return;
+        goto out;
     }
 
     /* CASE 2.5 listpack only. Sampling unique elements, in non-random order.
@@ -4406,8 +4403,7 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
         zfree(keys);
         zfree(vals);
         zuiClearIterator(&src);
-        updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, zsetAllocSize(zsetobj));
-        return;
+        goto out;
     }
 
     /* CASE 3:
@@ -4496,6 +4492,7 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
         dictRelease(d);
     }
     zuiClearIterator(&src);
+out:
     updateAllocSizes(c->db, getKeySlot(c->argv[1]->ptr), oldsize, zsetAllocSize(zsetobj));
 }
 
