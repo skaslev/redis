@@ -96,6 +96,10 @@ ifeq ($(USE_TCMALLOC_MINIMAL),yes)
 	MALLOC=tcmalloc_minimal
 endif
 
+ifeq ($(USE_MIMALLOC),yes)
+	MALLOC=mimalloc
+endif
+
 ifeq ($(USE_JEMALLOC),yes)
 	MALLOC=jemalloc
 endif
@@ -302,6 +306,11 @@ ifeq ($(MALLOC),jemalloc)
 	FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
 endif
 
+ifeq ($(MALLOC),mimalloc)
+	FINAL_CFLAGS+= -DUSE_MIMALLOC -I../deps/mimalloc/include
+	FINAL_LIBS := ../deps/mimalloc/lib/libmimalloc.a $(FINAL_LIBS)
+endif
+
 # LIBSSL & LIBCRYPTO
 LIBSSL_LIBS=
 LIBSSL_PKGCONFIG := $(shell $(PKG_CONFIG) --exists libssl && echo $$?)
@@ -394,6 +403,8 @@ ALL_SOURCES=$(sort $(patsubst %.o,%.c,$(REDIS_SERVER_OBJ) $(REDIS_VEC_SETS_OBJ) 
 all: $(REDIS_SERVER_NAME) $(REDIS_SENTINEL_NAME) $(REDIS_CLI_NAME) $(REDIS_BENCHMARK_NAME) $(REDIS_CHECK_RDB_NAME) $(REDIS_CHECK_AOF_NAME) $(TLS_MODULE) module_tests
 	@echo ""
 	@echo "Hint: It's a good idea to run 'make test' ;)"
+	@echo ""
+	@echo $(MALLOC)
 	@echo ""
 
 Makefile.dep:
