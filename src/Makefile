@@ -76,6 +76,9 @@ ifndef PYTHON
 PYTHON := $(shell which python3 || which python)
 endif
 
+# TODO REMOVEME
+USE_MIMALLOC=yes
+
 # Default allocator defaults to Jemalloc on Linux and libc otherwise
 MALLOC=libc
 ifeq ($(uname_S),Linux)
