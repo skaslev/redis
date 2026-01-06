@@ -1422,16 +1422,16 @@ dictEntry *dictGetFairRandomKey(dict *d) {
     return entries[idx];
 }
 
-static inline uint64_t rev(uint64_t x)
-{
+#ifdef __aarch64__
+static inline unsigned long rev(unsigned long x) {
     __asm__ __volatile__(
         "rbit %0, %0"
         : "+r"(x)
     );
     return x;
-} 
-
-static inline unsigned long revold(unsigned long x) {
+}
+#else
+static inline unsigned long rev(unsigned long x) {
 #if ULONG_MAX == 4294967295UL
     x = ((x & 0x55555555) << 1) | ((x >> 1) & 0x55555555);
     x = ((x & 0x33333333) << 2) | ((x >> 2) & 0x33333333);
@@ -1448,6 +1448,7 @@ static inline unsigned long revold(unsigned long x) {
 #endif
     return x;
 }
+#endif
 
 /* dictScan() is used to iterate over the elements of a dictionary.
  *
