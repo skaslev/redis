@@ -489,7 +489,7 @@ void activeDefragSdsDict(dict* d, int val_type) {
         activeDefragLuaScriptDictCallback : activeDefragSdsDictCallback);
     do {
         cursor = dictScanDefrag(d, cursor, fn,
-                                &defragfns, NULL);
+                                &defragfns, 0, NULL);
     } while (cursor != 0);
 }
 
@@ -503,7 +503,7 @@ void activeDefragHfieldDict(dict *d) {
     };
     do {
         cursor = dictScanDefrag(d, cursor, activeDefragHfieldDictCallback,
-                                &defragfns, d);
+                                &defragfns, 0, d);
     } while (cursor != 0);
 
     /* Continue with defragmentation of hash fields that have with TTL.
@@ -620,7 +620,7 @@ void scanLaterZset(robj *ob, unsigned long *cursor) {
     dict *d = zs->dict;
     scanLaterZsetData data = {zs};
     dictDefragFunctions defragfns = {.defragAlloc = activeDefragAlloc};
-    *cursor = dictScanDefrag(d, *cursor, scanZsetCallback, &defragfns, &data);
+    *cursor = dictScanDefrag(d, *cursor, scanZsetCallback, &defragfns, 0, &data);
 }
 
 /* Used as scan callback when all the work is done in the dictDefragFunctions. */
@@ -638,7 +638,7 @@ void scanLaterSet(robj *ob, unsigned long *cursor) {
         .defragAlloc = activeDefragAlloc,
         .defragKey = (dictDefragAllocFunction *)activeDefragSds
     };
-    *cursor = dictScanDefrag(d, *cursor, scanCallbackCountScanned, &defragfns, NULL);
+    *cursor = dictScanDefrag(d, *cursor, scanCallbackCountScanned, &defragfns, 0, NULL);
 }
 
 void scanLaterHash(robj *ob, unsigned long *cursor) {
@@ -663,7 +663,7 @@ void scanLaterHash(robj *ob, unsigned long *cursor) {
             .defragKey = NULL, /* Will be defragmented in activeDefragHfieldDictCallback. */
             .defragVal = NULL  /* value stored along with key as part of Entry */
         };
-        *cursor = dictScanDefrag(d, *cursor, activeDefragHfieldDictCallback, &defragfns, d);
+        *cursor = dictScanDefrag(d, *cursor, activeDefragHfieldDictCallback, &defragfns, 0, d);
 
         /* Move to next phase. */
         if (!*cursor) defrag_phase = HASH_DEFRAG_EBUCKETS;
@@ -720,7 +720,7 @@ void defragZsetSkiplist(defragKeysCtx *ctx, kvobj *ob) {
         dictDefragFunctions defragfns = {.defragAlloc = activeDefragAlloc};
         unsigned long cursor = 0;
         do {
-            cursor = dictScanDefrag(zs->dict, cursor, scanZsetCallback, &defragfns, &data);
+            cursor = dictScanDefrag(zs->dict, cursor, scanZsetCallback, &defragfns, 0, &data);
         } while (cursor != 0);
     }
     /* defrag the dict struct and tables */

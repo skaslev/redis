@@ -14,6 +14,7 @@
  */
 
 #include "fmacros.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +44,7 @@
  *    of elements and the buckets <= 1 / (HASHTABLE_MIN_FILL * dict_force_resize_ratio). */
 static dictResizeEnable dict_can_resize = DICT_RESIZE_ENABLE;
 static unsigned int dict_force_resize_ratio = 4;
+static int dict_scan_iterations = 16;
 
 /* -------------------------- types ----------------------------------------- */
 struct dictEntry {
@@ -77,6 +79,7 @@ static int dictDefaultCompare(dictCmpCache *cache, const void *key1, const void 
 static dictEntryLink dictFindLinkInternal(dict *d, const void *key, dictEntryLink *bucket);
 dictEntryLink dictFindLinkForInsert(dict *d, const void *key, dictEntry **existing);
 static dictEntry *dictInsertKeyAtLink(dict *d, void *key __stored_key, dictEntryLink link);
+static unsigned long rev(unsigned long v);
 
 /* -------------------------- unused  --------------------------- */
 void dictSetSignedIntegerVal(dictEntry *de, int64_t val);
@@ -1419,16 +1422,31 @@ dictEntry *dictGetFairRandomKey(dict *d) {
     return entries[idx];
 }
 
-/* Function to reverse bits. Algorithm from:
- * http://graphics.stanford.edu/~seander/bithacks.html#ReverseParallel */
-static unsigned long rev(unsigned long v) {
-    unsigned long s = CHAR_BIT * sizeof(v); // bit size; must be power of 2
-    unsigned long mask = ~0UL;
-    while ((s >>= 1) > 0) {
-        mask ^= (mask << s);
-        v = ((v >> s) & mask) | ((v << s) & ~mask);
-    }
-    return v;
+static inline uint64_t rev(uint64_t x)
+{
+    __asm__ __volatile__(
+        "rbit %0, %0"
+        : "+r"(x)
+    );
+    return x;
+} 
+
+static inline unsigned long revold(unsigned long x) {
+#if ULONG_MAX == 4294967295UL
+    x = ((x & 0x55555555) << 1) | ((x >> 1) & 0x55555555);
+    x = ((x & 0x33333333) << 2) | ((x >> 2) & 0x33333333);
+    x = ((x & 0x0F0F0F0F) << 4) | ((x >> 4) & 0x0F0F0F0F);
+    x = ((x & 0x00FF00FF) << 8) | ((x >> 8) & 0x00FF00FF);
+    x = (x << 16) | (x >> 16);
+#else
+    x = ((x & 0x5555555555555555ULL) << 1)  | ((x >> 1)  & 0x5555555555555555ULL);
+    x = ((x & 0x3333333333333333ULL) << 2)  | ((x >> 2)  & 0x3333333333333333ULL);
+    x = ((x & 0x0F0F0F0F0F0F0F0FULL) << 4)  | ((x >> 4)  & 0x0F0F0F0F0F0F0F0FULL);
+    x = ((x & 0x00FF00FF00FF00FFULL) << 8)  | ((x >> 8)  & 0x00FF00FF00FF00FFULL);
+    x = ((x & 0x0000FFFF0000FFFFULL) << 16) | ((x >> 16) & 0x0000FFFF0000FFFFULL);
+    x = (x << 32) | (x >> 32);
+#endif
+    return x;
 }
 
 /* dictScan() is used to iterate over the elements of a dictionary.
@@ -1520,7 +1538,15 @@ unsigned long dictScan(dict *d,
                        dictScanFunction *fn,
                        void *privdata)
 {
-    return dictScanDefrag(d, v, fn, NULL, privdata);
+    return dictScanDefrag(d, v, fn, NULL, 0, privdata);
+}
+
+unsigned long dictScanReadOnly(dict *d,
+                       unsigned long v,
+                       dictScanFunction *fn,
+                       void *privdata)
+{
+    return dictScanDefrag(d, v, fn, NULL, 1, privdata);
 }
 
 void dictScanDefragBucket(dict *d,dictScanFunction *fn,
@@ -1549,70 +1575,114 @@ void dictScanDefragBucket(dict *d,dictScanFunction *fn,
     }
 }
 
-/* Like dictScan, but additionally reallocates the memory used by the dict
- * entries using the provided allocation function. This feature was added for
- * the active defrag feature.
- *
- * The 'defragfns' callbacks are called with a pointer to memory that callback
- * can reallocate. The callbacks should return a new memory address or NULL,
- * where NULL means that no reallocation happened and the old memory is still
- * valid. */
+static inline void dictScanDefragBuckets(void *privdata, dictScanFunction *fn, void **entries, int len) {
+    int entry_count = 0;
+    for (int i = 0; i < len; i++) {
+        dictEntry *head = *(dictEntry **)entries[i];
+        if (head) {
+            redis_prefetch_read(decodeMaskedPtr(head));
+            entries[entry_count++] = head;
+        } 
+    }
+    int active_count = entry_count;
+    while (active_count > 0) {
+        for (int j = 0; j < entry_count; j++) {
+            if (!entries[j]) continue;
+            dictEntry *next = dictGetNext(entries[j]);
+            fn(privdata, entries[j], NULL);
+            entries[j] = next;
+            if (entries[j]) {
+                redis_prefetch_read(decodeMaskedPtr(entries[j]));
+            } else {
+                active_count--;
+            }
+        }
+    }
+}
+
 unsigned long dictScanDefrag(dict *d,
                              unsigned long v,
                              dictScanFunction *fn,
                              dictDefragFunctions *defragfns,
+                             int prefetch,
                              void *privdata)
 {
     int htidx0, htidx1;
     unsigned long m0, m1;
+    void *buckets[16];
+    int bucket_count = 0;
 
     if (dictSize(d) == 0) return 0;
-
     /* This is needed in case the scan callback tries to do dictFind or alike. */
     dictPauseRehashing(d);
 
-    if (!dictIsRehashing(d)) {
+    int iterations = (defragfns == NULL) ? dict_scan_iterations : 1;
+    while (iterations--) {
         htidx0 = 0;
-        m0 = DICTHT_SIZE_MASK(d->ht_size_exp[htidx0]);
-        dictScanDefragBucket(d, fn, defragfns, privdata, &d->ht_table[htidx0][v & m0]);
-
-        /* Set unmasked bits so incrementing the reversed cursor
-         * operates on the masked bits */
-        v |= ~m0;
-
-        /* Increment the reverse cursor */
-        v = rev(v);
-        v++;
-        v = rev(v);
-
-    } else {
-        htidx0 = 0;
-        htidx1 = 1;
-
-        /* Make sure t0 is the smaller and t1 is the bigger table */
-        if (DICTHT_SIZE(d->ht_size_exp[htidx0]) > DICTHT_SIZE(d->ht_size_exp[htidx1])) {
+        if (dictIsRehashing(d) && DICTHT_SIZE(d->ht_size_exp[0]) > DICTHT_SIZE(d->ht_size_exp[1])) {
             htidx0 = 1;
-            htidx1 = 0;
         }
-
         m0 = DICTHT_SIZE_MASK(d->ht_size_exp[htidx0]);
-        m1 = DICTHT_SIZE_MASK(d->ht_size_exp[htidx1]);
+        if (!dictIsRehashing(d)) {
+            if (defragfns || !prefetch) {
+                dictScanDefragBucket(d, fn, defragfns, privdata, &d->ht_table[htidx0][v & m0]);
+            } else {
+                buckets[bucket_count] = &d->ht_table[htidx0][v & m0];
+                redis_prefetch_read(buckets[bucket_count++]);
+                if (bucket_count == 16) {
+                    dictScanDefragBuckets(privdata, fn, buckets, bucket_count);
+                    bucket_count = 0;
+                }
+            }
 
-        dictScanDefragBucket(d, fn, defragfns, privdata, &d->ht_table[htidx0][v & m0]);
+            /* Set unmasked bits so incrementing the reversed cursor
+             * operates on the masked bits */
+            v |= ~m0;
 
-        /* Iterate over indices in larger table that are the expansion
-         * of the index pointed to by the cursor in the smaller table */
-        do {
-            dictScanDefragBucket(d, fn, defragfns, privdata, &d->ht_table[htidx1][v & m1]);
-
-            /* Increment the reverse cursor not covered by the smaller mask.*/
-            v |= ~m1;
+            /* Increment the reverse cursor */
             v = rev(v);
             v++;
             v = rev(v);
+        } else {
+            htidx1 = 1 - htidx0;
+            m1 = DICTHT_SIZE_MASK(d->ht_size_exp[htidx1]);
+            if (defragfns || !prefetch) {
+                dictScanDefragBucket(d, fn, defragfns, privdata, &d->ht_table[htidx0][v & m0]);
+            } else {
+                buckets[bucket_count] = &d->ht_table[htidx0][v & m0];
+                redis_prefetch_read(buckets[bucket_count++]);
+                if (bucket_count == 16) {
+                    dictScanDefragBuckets(privdata, fn, buckets, bucket_count);
+                    bucket_count = 0;
+                }
+            }
 
-            /* Continue while bits covered by mask difference is non-zero */
-        } while (v & (m0 ^ m1));
+            /* Iterate over indices in larger table that are the expansion
+             * of the index pointed to by the cursor in the smaller table */
+            do {
+                if (defragfns || !prefetch) {
+                    dictScanDefragBucket(d, fn, defragfns, privdata, &d->ht_table[htidx1][v & m1]);
+                } else {
+                    buckets[bucket_count] = &d->ht_table[htidx1][v & m1];
+                    redis_prefetch_read(buckets[bucket_count++]);
+                    if (bucket_count == 16) {
+                        dictScanDefragBuckets(privdata, fn, buckets, bucket_count);
+                        bucket_count = 0;
+                    }
+                }
+
+                /* Increment the reverse cursor not covered by the smaller mask.*/
+                v |= ~m1;
+                v = rev(v);
+                v++;
+                v = rev(v);
+                /* Continue while bits covered by mask difference is non-zero */
+            } while (v & (m0 ^ m1));
+        }
+        if (!v) break;
+    }
+    if (bucket_count > 0) {
+        dictScanDefragBuckets(privdata, fn, buckets, bucket_count);
     }
 
     dictResumeRehashing(d);

@@ -25,6 +25,7 @@
 #include <ctype.h>
 #include "bio.h"
 #include "keymeta.h"
+#include "fifo_queue.h"
 
 /*-----------------------------------------------------------------------------
  * C-level DB API
@@ -1563,7 +1564,7 @@ void keysCommand(client *c) {
 
 /* Data used by the dict scan callback. */
 typedef struct {
-    list *keys;   /* elements that collect from dict */
+    fifoQueue *keys;   /* elements that collect from dict */
     robj *o;      /* o must be a hash/set/zset object, NULL means current db */
     long long type; /* the particular type when scan the db */
     sds pattern;  /* pattern string, NULL means no pattern */
@@ -1595,7 +1596,7 @@ void scanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
     UNUSED(plink);
     Entry *hashEntry = NULL;
     scanData *data = (scanData *)privdata;
-    list *keys = data->keys;
+    fifoQueue *keys = data->keys;
     robj *o = data->o;
     sds val = NULL;
     void *key = NULL;  /* if OBJ_HASH then key is of type `hfield`. Otherwise, `sds` */
@@ -1665,8 +1666,8 @@ void scanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
         serverPanic("Type not handled in SCAN callback.");
     }
 
-    listAddNodeTail(keys, key);
-    if (val && !data->no_values) listAddNodeTail(keys, val);
+    fifoQueueEnqueue(keys, key);
+    if (val && !data->no_values) fifoQueueEnqueue(keys, val);
 }
 
 /* Try to parse a SCAN cursor stored at object 'o':
@@ -1739,7 +1740,6 @@ static int scanShouldSkipDict(dict *d, int didx) {
  * of every element on the Hash. */
 void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
     int i, j;
-    listNode *node;
     long count = 10;
     sds pat = NULL;
     sds typename = NULL;
@@ -1824,7 +1824,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         ht = zs->dict;
     }
 
-    list *keys = listCreate();
+    fifoQueue *keys = fifoQueueCreate();
     /* Set a free callback for the contents of the collected keys list.
      * For the main keyspace dict, and when we scan a key that's dict encoded
      * (we have 'ht'), we don't need to define free method because the strings
@@ -1833,9 +1833,9 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
      * free the temporary strings we add to that list.
      * The exception to the above is ZSET, where we do allocate temporary
      * strings even when scanning a dict. */
-    if (o && (!ht || o->type == OBJ_ZSET)) {
+    /* if (o && (!ht || o->type == OBJ_ZSET)) {
         listSetFreeMethod(keys, sdsfreegeneric);
-    }
+    } */
 
     /* For main dictionary scan or data structure using hashtable. */
     if (!o || ht) {
@@ -1878,15 +1878,15 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
             /* In cluster mode there is a separate dictionary for each slot.
              * If cursor is empty, we should try exploring next non-empty slot. */
             if (o == NULL) {
-                cursor = kvstoreScan(c->db->keys, cursor, onlydidx, scanCallback, scanShouldSkipDict, &data);
+                cursor = kvstoreScan(c->db->keys, cursor, onlydidx, scanCallback, scanShouldSkipDict, 1, &data);
             } else {
-                cursor = dictScan(ht, cursor, scanCallback, &data);
+                cursor = dictScanReadOnly(ht, cursor, scanCallback, &data);
             }
         } while (cursor && maxiterations-- && data.sampled < count);
     } else if (o->type == OBJ_SET) {
         unsigned long array_reply_len = 0;
         void *replylen = NULL;
-        listRelease(keys);
+        fifoQueueDestroy(keys);
         char *str;
         char buf[LONG_STR_SIZE];
         size_t len;
@@ -1932,7 +1932,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         unsigned long array_reply_len = 0;
         unsigned char intbuf[LP_INTBUF_SIZE];
         void *replylen = NULL;
-        listRelease(keys);
+        fifoQueueDestroy(keys);
 
         /* Reply to the client. */
         addReplyArrayLen(c, 2);
@@ -1983,7 +1983,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         unsigned char intbuf[LP_INTBUF_SIZE];
         void *replylen = NULL;
 
-        listRelease(keys);
+        fifoQueueDestroy(keys);
         /* Reply to the client. */
         addReplyArrayLen(c, 2);
         /* Cursor is always 0 given we iterate over all set */
@@ -2029,14 +2029,17 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
     addReplyArrayLen(c, 2);
     addReplyBulkLongLong(c,cursor);
 
-    addReplyArrayLen(c, listLength(keys));
-    while ((node = listFirst(keys)) != NULL) {
-        void *key = listNodeValue(node);
+    addReplyArrayLen(c, fifoQueueSize(keys));
+    while (fifoQueueSize(keys) > 0) {
+        void *key = fifoQueueDequeue(keys);
         addReplyBulkCBuffer(c, key, sdslen(key));
-        listDelNode(keys, node);
+        
+        if (o && (!ht || o->type == OBJ_ZSET)) {
+            sdsfreegeneric(key);
+        }
     }
 
-    listRelease(keys);
+    fifoQueueDestroy(keys);
 }
 
 /* The SCAN command completely relies on scanGenericCommand. */
@@ -3020,7 +3023,7 @@ unsigned long long dbSize(redisDb *db) {
 }
 
 unsigned long long dbScan(redisDb *db, unsigned long long cursor, dictScanFunction *scan_cb, void *privdata) {
-    return kvstoreScan(db->keys, cursor, -1, scan_cb, scanShouldSkipDict, privdata);
+    return kvstoreScan(db->keys, cursor, -1, scan_cb, scanShouldSkipDict, 0, privdata);
 }
 
 /* -----------------------------------------------------------------------------

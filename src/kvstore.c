@@ -332,6 +332,7 @@ size_t kvstoreMemUsage(kvstore *kvs) {
 unsigned long long kvstoreScan(kvstore *kvs, unsigned long long cursor,
                                int onlydidx, dictScanFunction *scan_cb,
                                kvstoreScanShouldSkipDict *skip_cb,
+                               int use_prefetch,
                                void *privdata)
 {
     unsigned long long _cursor = 0;
@@ -356,7 +357,10 @@ unsigned long long kvstoreScan(kvstore *kvs, unsigned long long cursor,
 
     int skip = !d || (skip_cb && skip_cb(d, didx));
     if (!skip) {
-        _cursor = dictScan(d, cursor, scan_cb, privdata);
+        if (use_prefetch)
+            _cursor = dictScanReadOnly(d, cursor, scan_cb, privdata);
+        else
+            _cursor = dictScan(d, cursor, scan_cb, privdata);
         /* In dictScan, scan_cb may delete entries (e.g., in active expire case). */
         freeDictIfNeeded(kvs, didx);
     }
@@ -784,7 +788,7 @@ unsigned long kvstoreDictScanDefrag(kvstore *kvs, int didx, unsigned long v, dic
     dict *d = kvstoreGetDict(kvs, didx);
     if (!d)
         return 0;
-    return dictScanDefrag(d, v, fn, defragfns, privdata);
+    return dictScanDefrag(d, v, fn, defragfns, 0, privdata);
 }
 
 /* Unlike kvstoreDictScanDefrag(), this method doesn't defrag the data(keys and values)
