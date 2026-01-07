@@ -43,13 +43,11 @@ size_t fifoQueueSize(fifoQueue *fq) {
 
 void fifoQueueEnqueue(fifoQueue *fq, void *data) {
     if (fq->tail == NULL) {
-        fq->head = fq->tail = zmalloc(sizeof(fifoNode));
-        fq->tail->next = NULL;
+        fq->head = fq->tail = zcalloc(sizeof(fifoNode));
         fq->headIdx = 0;
         fq->tailIdx = 0;
     } else if (fq->tailIdx == FIFO_NODE_ITEMS) {
-        fifoNode *newNode = zmalloc(sizeof(fifoNode));
-        newNode->next = NULL;
+        fifoNode *newNode = zcalloc(sizeof(fifoNode));
         fq->tail->next = newNode;
         fq->tail = newNode;
         fq->tailIdx = 0;
