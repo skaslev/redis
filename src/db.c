@@ -1824,19 +1824,6 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         ht = zs->dict;
     }
 
-    fifoQueue *keys = fifoQueueCreate();
-    /* Set a free callback for the contents of the collected keys list.
-     * For the main keyspace dict, and when we scan a key that's dict encoded
-     * (we have 'ht'), we don't need to define free method because the strings
-     * in the list are just a shallow copy from the pointer in the dictEntry.
-     * When scanning a key with other encodings (e.g. listpack), we need to
-     * free the temporary strings we add to that list.
-     * The exception to the above is ZSET, where we do allocate temporary
-     * strings even when scanning a dict. */
-    /* if (o && (!ht || o->type == OBJ_ZSET)) {
-        listSetFreeMethod(keys, sdsfreegeneric);
-    } */
-
     /* For main dictionary scan or data structure using hashtable. */
     if (!o || ht) {
         /* We set the max number of iterations to ten times the specified
@@ -1846,7 +1833,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         long maxiterations = count*10;
 
         /* We pass scanData which have three pointers to the callback:
-         * 1. data.keys: the list to which it will add new elements;
+         * 1. data.keys: the fifo queue to which it will add new elements;
          * 2. data.o: the object containing the dictionary so that
          * it is possible to fetch more data in a type-dependent way;
          * 3. data.type: the specified type scan in the db, LLONG_MAX means
@@ -1858,6 +1845,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
          * to prevent a long hang time caused by filtering too many keys;
          * 6. data.no_values: to control whether values will be returned or
          * only keys are returned. */
+        fifoQueue *keys = fifoQueueCreate();
         scanData data = {
             .keys = keys,
             .o = o,
@@ -1880,13 +1868,33 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
             if (o == NULL) {
                 cursor = kvstoreScan(c->db->keys, cursor, onlydidx, scanCallback, scanShouldSkipDict, 1, &data);
             } else {
-                cursor = dictScanReadOnly(ht, cursor, scanCallback, &data);
+                cursor = dictScan(ht, cursor, scanCallback, 1, &data);
             }
         } while (cursor && maxiterations-- && data.sampled < count);
+
+        /* Reply to the client. */
+        addReplyArrayLen(c, 2);
+        addReplyBulkLongLong(c,cursor);
+
+        addReplyArrayLen(c, fifoQueueSize(keys));
+        while (fifoQueueSize(keys) > 0) {
+            void *key = fifoQueueDequeue(keys);
+            addReplyBulkCBuffer(c, key, sdslen(key));
+
+            /* Free the key if necessary.
+             * For the main keyspace dict, and when we scan a key that's dict encoded
+             * (we have 'ht'), we don't need to free because the strings in fifoQueue
+             * are just a shallow copy from the pointer in the dictEntry.
+             * The exception to the above is ZSET, where we do allocate temporary
+             * strings even when scanning a dict. */
+            if (o && o->type == OBJ_ZSET)
+                sdsfreegeneric(key);
+        }
+
+        fifoQueueDestroy(keys);
     } else if (o->type == OBJ_SET) {
         unsigned long array_reply_len = 0;
         void *replylen = NULL;
-        fifoQueueDestroy(keys);
         char *str;
         char buf[LONG_STR_SIZE];
         size_t len;
@@ -1932,7 +1940,6 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         unsigned long array_reply_len = 0;
         unsigned char intbuf[LP_INTBUF_SIZE];
         void *replylen = NULL;
-        fifoQueueDestroy(keys);
 
         /* Reply to the client. */
         addReplyArrayLen(c, 2);
@@ -1983,7 +1990,6 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         unsigned char intbuf[LP_INTBUF_SIZE];
         void *replylen = NULL;
 
-        fifoQueueDestroy(keys);
         /* Reply to the client. */
         addReplyArrayLen(c, 2);
         /* Cursor is always 0 given we iterate over all set */
@@ -2024,22 +2030,6 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
     } else {
         serverPanic("Not handled encoding in SCAN.");
     }
-
-    /* Step 3: Reply to the client. */
-    addReplyArrayLen(c, 2);
-    addReplyBulkLongLong(c,cursor);
-
-    addReplyArrayLen(c, fifoQueueSize(keys));
-    while (fifoQueueSize(keys) > 0) {
-        void *key = fifoQueueDequeue(keys);
-        addReplyBulkCBuffer(c, key, sdslen(key));
-        
-        if (o && (!ht || o->type == OBJ_ZSET)) {
-            sdsfreegeneric(key);
-        }
-    }
-
-    fifoQueueDestroy(keys);
 }
 
 /* The SCAN command completely relies on scanGenericCommand. */

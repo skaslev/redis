@@ -357,10 +357,7 @@ unsigned long long kvstoreScan(kvstore *kvs, unsigned long long cursor,
 
     int skip = !d || (skip_cb && skip_cb(d, didx));
     if (!skip) {
-        if (use_prefetch)
-            _cursor = dictScanReadOnly(d, cursor, scan_cb, privdata);
-        else
-            _cursor = dictScan(d, cursor, scan_cb, privdata);
+        _cursor = dictScan(d, cursor, scan_cb, use_prefetch, privdata);
         /* In dictScan, scan_cb may delete entries (e.g., in active expire case). */
         freeDictIfNeeded(kvs, didx);
     }

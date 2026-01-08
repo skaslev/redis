@@ -14,7 +14,6 @@
  */
 
 #include "fmacros.h"
-#include "config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,7 +43,7 @@
  *    of elements and the buckets <= 1 / (HASHTABLE_MIN_FILL * dict_force_resize_ratio). */
 static dictResizeEnable dict_can_resize = DICT_RESIZE_ENABLE;
 static unsigned int dict_force_resize_ratio = 4;
-static int dict_scan_iterations = 16;
+static const int dict_scan_iterations = 16;
 
 /* -------------------------- types ----------------------------------------- */
 struct dictEntry {
@@ -1537,17 +1536,10 @@ static inline unsigned long rev(unsigned long x) {
 unsigned long dictScan(dict *d,
                        unsigned long v,
                        dictScanFunction *fn,
+                       int prefetch,
                        void *privdata)
 {
-    return dictScanDefrag(d, v, fn, NULL, 0, privdata);
-}
-
-unsigned long dictScanReadOnly(dict *d,
-                       unsigned long v,
-                       dictScanFunction *fn,
-                       void *privdata)
-{
-    return dictScanDefrag(d, v, fn, NULL, 1, privdata);
+    return dictScanDefrag(d, v, fn, NULL, prefetch, privdata);
 }
 
 void dictScanDefragBucket(dict *d,dictScanFunction *fn,
@@ -1583,7 +1575,7 @@ static inline void dictScanDefragBuckets(void *privdata, dictScanFunction *fn, v
         if (head) {
             redis_prefetch_read(decodeMaskedPtr(head));
             entries[entry_count++] = head;
-        } 
+        }
     }
     int active_count = entry_count;
     while (active_count > 0) {
@@ -1601,6 +1593,16 @@ static inline void dictScanDefragBuckets(void *privdata, dictScanFunction *fn, v
     }
 }
 
+#define MAX_BUCKET_COUNT 16
+
+/* Like dictScan, but additionally reallocates the memory used by the dict
+ * entries using the provided allocation function. This feature was added for
+ * the active defrag feature.
+ *
+ * The 'defragfns' callbacks are called with a pointer to memory that callback
+ * can reallocate. The callbacks should return a new memory address or NULL,
+ * where NULL means that no reallocation happened and the old memory is still
+ * valid. */
 unsigned long dictScanDefrag(dict *d,
                              unsigned long v,
                              dictScanFunction *fn,
@@ -1610,7 +1612,7 @@ unsigned long dictScanDefrag(dict *d,
 {
     int htidx0, htidx1;
     unsigned long m0, m1;
-    void *buckets[16];
+    void *buckets[MAX_BUCKET_COUNT];
     int bucket_count = 0;
 
     if (dictSize(d) == 0) return 0;
@@ -1630,7 +1632,7 @@ unsigned long dictScanDefrag(dict *d,
             } else {
                 buckets[bucket_count] = &d->ht_table[htidx0][v & m0];
                 redis_prefetch_read(buckets[bucket_count++]);
-                if (bucket_count == 16) {
+                if (bucket_count == MAX_BUCKET_COUNT) {
                     dictScanDefragBuckets(privdata, fn, buckets, bucket_count);
                     bucket_count = 0;
                 }
@@ -1652,7 +1654,7 @@ unsigned long dictScanDefrag(dict *d,
             } else {
                 buckets[bucket_count] = &d->ht_table[htidx0][v & m0];
                 redis_prefetch_read(buckets[bucket_count++]);
-                if (bucket_count == 16) {
+                if (bucket_count == MAX_BUCKET_COUNT) {
                     dictScanDefragBuckets(privdata, fn, buckets, bucket_count);
                     bucket_count = 0;
                 }
@@ -1666,7 +1668,7 @@ unsigned long dictScanDefrag(dict *d,
                 } else {
                     buckets[bucket_count] = &d->ht_table[htidx1][v & m1];
                     redis_prefetch_read(buckets[bucket_count++]);
-                    if (bucket_count == 16) {
+                    if (bucket_count == MAX_BUCKET_COUNT) {
                         dictScanDefragBuckets(privdata, fn, buckets, bucket_count);
                         bucket_count = 0;
                     }

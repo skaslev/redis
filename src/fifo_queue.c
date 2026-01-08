@@ -52,17 +52,17 @@ void fifoQueueEnqueue(fifoQueue *fq, void *data) {
         fq->tail = newNode;
         fq->tailIdx = 0;
     }
-    
+
     fq->tail->items[fq->tailIdx++] = data;
     fq->size++;
 }
 
 void *fifoQueueDequeue(fifoQueue *fq) {
     if (fq->size == 0) return NULL;
-    
+
     void *data = fq->head->items[fq->headIdx++];
     fq->size--;
-    
+
     if (fq->head == fq->tail) {
         if (fq->size == 0) {
             // Queue is empty, reset indices to reuse the node
@@ -75,12 +75,12 @@ void *fifoQueueDequeue(fifoQueue *fq) {
         fq->head = oldHead->next;
         zfree(oldHead);
         fq->headIdx = 0;
-        if (fq->head != NULL) { 
+        if (fq->head != NULL) {
             for (int i = 0; i < FIFO_NODE_ITEMS; i++) {
                 redis_prefetch_read(fq->head->items[i]);
             }
         }
     }
-    
+
     return data;
 }
