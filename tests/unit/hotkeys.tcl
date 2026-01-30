@@ -244,8 +244,8 @@ start_server {tags {"hotkeys"}} {
     }
 
     test {HOTKEYS - commands inside MULTI/EXEC} {
-        set key1 "\{t\}key1"
-        set key2 "\{t\}key2"
+        set key1 "key1\{t\}"
+        set key2 "key2\{t\}"
 
         assert_equal {OK} [r hotkeys start METRICS 2 CPU NET]
         r multi
