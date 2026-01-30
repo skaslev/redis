@@ -255,7 +255,9 @@ start_server {tags {"hotkeys"}} {
         r set $key1 value3
         r exec
 
+        assert_equal {OK} [r hotkeys stop]
         set result [r hotkeys get]
+        assert_equal {OK} [r hotkeys reset]
 
         # Check NET metrics
         set net_result [dict get $result "by-net-bytes"]
@@ -270,9 +272,6 @@ start_server {tags {"hotkeys"}} {
         # Both keys should be tracked from within the MULTI/EXEC block
         assert [dict exists $cpu_result $key1]
         assert [dict exists $cpu_result $key2]
-
-        assert_equal {OK} [r hotkeys stop]
-        assert_equal {OK} [r hotkeys reset]
     }
 
     test {HOTKEYS GET - no conditional fields without selected slots} {
