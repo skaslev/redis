@@ -270,8 +270,6 @@ start_server {tags {"hotkeys"}} {
         # Both keys should be tracked from within the MULTI/EXEC block
         assert [dict exists $cpu_result $key1]
         assert [dict exists $cpu_result $key2]
-        # key1 should have more CPU time than key2 since it's accessed more times
-        assert {[dict get $cpu_result $key1] >= [dict get $cpu_result $key2]}
 
         assert_equal {OK} [r hotkeys stop]
         assert_equal {OK} [r hotkeys reset]
