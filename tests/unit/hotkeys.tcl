@@ -243,7 +243,36 @@ start_server {tags {"hotkeys"}} {
         assert_equal {OK} [r hotkeys reset]
     }
 
+    test {HOTKEYS - commands inside MULTI/EXEC} {
+        assert_equal {OK} [r hotkeys start METRICS 2 CPU NET]
+        r multi
+        r set multi_key1 value1
+        r set multi_key2 value1
+        r set multi_key1 value2
+        r set multi_key1 value3
+        r exec
 
+        set result [r hotkeys get]
+
+        # Check NET metrics
+        set net_result [dict get $result "by-net-bytes"]
+        # Both keys should be tracked from within the MULTI/EXEC block
+        assert [dict exists $net_result "multi_key1"]
+        assert [dict exists $net_result "multi_key2"]
+        # multi_key1 should have more bytes than multi_key2 since it's accessed more times
+        assert {[dict get $net_result "multi_key1"] > [dict get $net_result "multi_key2"]}
+
+        # Check CPU metrics
+        set cpu_result [dict get $result "by-cpu-time-us"]
+        # Both keys should be tracked from within the MULTI/EXEC block
+        assert [dict exists $cpu_result "multi_key1"]
+        assert [dict exists $cpu_result "multi_key2"]
+        # multi_key1 should have more CPU time than multi_key2 since it's accessed more times
+        assert {[dict get $cpu_result "multi_key1"] >= [dict get $cpu_result "multi_key2"]}
+
+        assert_equal {OK} [r hotkeys stop]
+        assert_equal {OK} [r hotkeys reset]
+    }
 
     test {HOTKEYS GET - no conditional fields without selected slots} {
         assert_equal {OK} [r hotkeys start METRICS 2 CPU NET SAMPLE 10]
