@@ -249,10 +249,14 @@ start_server {tags {"hotkeys"}} {
 
         assert_equal {OK} [r hotkeys start METRICS 2 CPU NET]
         r multi
-        r set $key1 value1
-        r set $key2 value1
-        r set $key1 value2
-        r set $key1 value3
+        # Send multiple commands to avoid <1us cpu for $key2 which we assert
+        # at end of test
+        for {set i 0} {$i < 7} {incr i} {
+            r set $key1 value1
+            r set $key2 value1
+            r set $key1 value2
+            r set $key1 value3
+        }
         r exec
 
         assert_equal {OK} [r hotkeys stop]
