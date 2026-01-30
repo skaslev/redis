@@ -244,12 +244,15 @@ start_server {tags {"hotkeys"}} {
     }
 
     test {HOTKEYS - commands inside MULTI/EXEC} {
+        set key1 "\{t\}key1"
+        set key2 "\{t\}key2"
+
         assert_equal {OK} [r hotkeys start METRICS 2 CPU NET]
         r multi
-        r set multi_key1 value1
-        r set multi_key2 value1
-        r set multi_key1 value2
-        r set multi_key1 value3
+        r set $key1 value1
+        r set $key2 value1
+        r set $key1 value2
+        r set $key1 value3
         r exec
 
         set result [r hotkeys get]
@@ -257,18 +260,18 @@ start_server {tags {"hotkeys"}} {
         # Check NET metrics
         set net_result [dict get $result "by-net-bytes"]
         # Both keys should be tracked from within the MULTI/EXEC block
-        assert [dict exists $net_result "multi_key1"]
-        assert [dict exists $net_result "multi_key2"]
-        # multi_key1 should have more bytes than multi_key2 since it's accessed more times
-        assert {[dict get $net_result "multi_key1"] > [dict get $net_result "multi_key2"]}
+        assert [dict exists $net_result $key1]
+        assert [dict exists $net_result $key2]
+        # key1 should have more bytes than key2 since it's accessed more times
+        assert {[dict get $net_result $key1] > [dict get $net_result $key2]}
 
         # Check CPU metrics
         set cpu_result [dict get $result "by-cpu-time-us"]
         # Both keys should be tracked from within the MULTI/EXEC block
-        assert [dict exists $cpu_result "multi_key1"]
-        assert [dict exists $cpu_result "multi_key2"]
-        # multi_key1 should have more CPU time than multi_key2 since it's accessed more times
-        assert {[dict get $cpu_result "multi_key1"] >= [dict get $cpu_result "multi_key2"]}
+        assert [dict exists $cpu_result $key1]
+        assert [dict exists $cpu_result $key2]
+        # key1 should have more CPU time than key2 since it's accessed more times
+        assert {[dict get $cpu_result $key1] >= [dict get $cpu_result $key2]}
 
         assert_equal {OK} [r hotkeys stop]
         assert_equal {OK} [r hotkeys reset]
