@@ -1660,7 +1660,7 @@ void scanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
     } else if (o->type == OBJ_ZSET) {
         char buf[MAX_LONG_DOUBLE_CHARS];
         int len = ld2string(buf, sizeof(buf), znode->score, LD_STR_AUTO);
-        key = sdsdup(keyStr);
+        key = keyStr;
         val = sdsnewlen(buf, len);
     } else {
         serverPanic("Type not handled in SCAN callback.");
@@ -1881,14 +1881,15 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         while ((key = fifoQueueDequeue(keys))) {
             addReplyBulkCBuffer(c, key, sdslen(key));
 
-            /* Free the key if necessary.
-             * For the main keyspace dict, and when we scan a key that's dict encoded
-             * (we have 'ht'), we don't need to free because the strings in fifoQueue
-             * are just a shallow copy from the pointer in the dictEntry.
-             * The exception to the above is ZSET, where we do allocate temporary
-             * strings even when scanning a dict. */
-            if (o && o->type == OBJ_ZSET)
-                sdsfreegeneric(key);
+            /* Only HSCAN and ZSCAN have values. For SCAN and SSCAN, only keys are enqueued. */
+            if (o && (o->type == OBJ_HASH || o->type == OBJ_ZSET) && !no_values) {
+                void *val = fifoQueueDequeue(keys);
+                addReplyBulkCBuffer(c, val, sdslen(val));
+                /* ZSET scores are allocated as new strings (converted from double),
+                 * so they need to be freed. Hash values are just pointers into the dict. */
+                if (o->type == OBJ_ZSET)
+                    sdsfreegeneric(val);
+            }
         }
 
         fifoQueueDestroy(keys);
