@@ -1535,11 +1535,11 @@ static inline unsigned long rev(unsigned long x) {
  */
 unsigned long dictScan(dict *d,
                        unsigned long v,
-                       dictScanFunction *fn,
                        int prefetch,
+                       dictScanFunction *fn,
                        void *privdata)
 {
-    return dictScanDefrag(d, v, fn, NULL, prefetch, privdata);
+    return dictScanDefrag(d, v, prefetch, fn, NULL, privdata);
 }
 
 void dictScanDefragBucket(dict *d,dictScanFunction *fn,
@@ -1605,9 +1605,9 @@ static inline void dictScanDefragBuckets(void *privdata, dictScanFunction *fn, v
  * valid. */
 unsigned long dictScanDefrag(dict *d,
                              unsigned long v,
+                             int prefetch,
                              dictScanFunction *fn,
                              dictDefragFunctions *defragfns,
-                             int prefetch,
                              void *privdata)
 {
     int htidx0, htidx1;

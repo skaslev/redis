@@ -12,8 +12,8 @@ typedef struct fifoNode {
 struct fifoQueue {
     fifoNode *head;
     fifoNode *tail;
-    int headIdx;
-    int tailIdx;
+    int head_idx;
+    int tail_idx;
     size_t size;
 };
 
@@ -21,8 +21,8 @@ fifoQueue *fifoQueueCreate(void) {
     fifoQueue *fq = zmalloc(sizeof(*fq));
     fq->head = NULL;
     fq->tail = NULL;
-    fq->headIdx = 0;
-    fq->tailIdx = 0;
+    fq->head_idx = 0;
+    fq->tail_idx = 0;
     fq->size = 0;
     return fq;
 }
@@ -44,37 +44,37 @@ size_t fifoQueueSize(fifoQueue *fq) {
 void fifoQueueEnqueue(fifoQueue *fq, void *data) {
     if (fq->tail == NULL) {
         fq->head = fq->tail = zcalloc(sizeof(fifoNode));
-        fq->headIdx = 0;
-        fq->tailIdx = 0;
-    } else if (fq->tailIdx == FIFO_NODE_ITEMS) {
+        fq->head_idx = 0;
+        fq->tail_idx = 0;
+    } else if (fq->tail_idx == FIFO_NODE_ITEMS) {
         fifoNode *newNode = zcalloc(sizeof(fifoNode));
         fq->tail->next = newNode;
         fq->tail = newNode;
-        fq->tailIdx = 0;
+        fq->tail_idx = 0;
     }
 
-    fq->tail->items[fq->tailIdx++] = data;
+    fq->tail->items[fq->tail_idx++] = data;
     fq->size++;
 }
 
 void *fifoQueueDequeue(fifoQueue *fq) {
     if (fq->size == 0) return NULL;
 
-    void *data = fq->head->items[fq->headIdx++];
+    void *data = fq->head->items[fq->head_idx++];
     fq->size--;
 
     if (fq->head == fq->tail) {
         if (fq->size == 0) {
-            // Queue is empty, reset indices to reuse the node
-            fq->headIdx = 0;
-            fq->tailIdx = 0;
+            /* Queue is empty, reset indices to reuse the node */
+            fq->head_idx = 0;
+            fq->tail_idx = 0;
         }
-    } else if (fq->headIdx == FIFO_NODE_ITEMS) {
-        // Head node exhausted and it's not the last node
+    } else if (fq->head_idx == FIFO_NODE_ITEMS) {
+        /* Head node exhausted and it's not the last node */
         fifoNode *oldHead = fq->head;
         fq->head = oldHead->next;
         zfree(oldHead);
-        fq->headIdx = 0;
+        fq->head_idx = 0;
         if (fq->head != NULL) {
             for (int i = 0; i < FIFO_NODE_ITEMS; i++) {
                 redis_prefetch_read(fq->head->items[i]);

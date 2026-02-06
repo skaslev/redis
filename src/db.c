@@ -1866,9 +1866,9 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
             /* In cluster mode there is a separate dictionary for each slot.
              * If cursor is empty, we should try exploring next non-empty slot. */
             if (o == NULL) {
-                cursor = kvstoreScan(c->db->keys, cursor, onlydidx, scanCallback, scanShouldSkipDict, 1, &data);
+                cursor = kvstoreScan(c->db->keys, cursor, onlydidx, 1, scanCallback, scanShouldSkipDict, &data);
             } else {
-                cursor = dictScan(ht, cursor, scanCallback, 1, &data);
+                cursor = dictScan(ht, cursor, 1, scanCallback, &data);
             }
         } while (cursor && maxiterations-- && data.sampled < count);
 
@@ -1877,8 +1877,8 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         addReplyBulkLongLong(c,cursor);
 
         addReplyArrayLen(c, fifoQueueSize(keys));
-        while (fifoQueueSize(keys) > 0) {
-            void *key = fifoQueueDequeue(keys);
+        void *key;
+        while ((key = fifoQueueDequeue(keys))) {
             addReplyBulkCBuffer(c, key, sdslen(key));
 
             /* Free the key if necessary.
@@ -3013,7 +3013,7 @@ unsigned long long dbSize(redisDb *db) {
 }
 
 unsigned long long dbScan(redisDb *db, unsigned long long cursor, dictScanFunction *scan_cb, void *privdata) {
-    return kvstoreScan(db->keys, cursor, -1, scan_cb, scanShouldSkipDict, 0, privdata);
+    return kvstoreScan(db->keys, cursor, -1, 0, scan_cb, scanShouldSkipDict, privdata);
 }
 
 /* -----------------------------------------------------------------------------
