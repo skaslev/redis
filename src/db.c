@@ -1598,7 +1598,7 @@ void scanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
     scanData *data = (scanData *)privdata;
     fifoQueue *keys = data->keys;
     robj *o = data->o;
-    sds val = NULL;
+    void *val = NULL;  /* sds for hash, zskiplistNode* for zset */
     void *key = NULL;  /* if OBJ_HASH then key is of type `hfield`. Otherwise, `sds` */
     void *keyStr;
     data->sampled++;
@@ -1658,10 +1658,8 @@ void scanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
             return;
 
     } else if (o->type == OBJ_ZSET) {
-        char buf[MAX_LONG_DOUBLE_CHARS];
-        int len = ld2string(buf, sizeof(buf), znode->score, LD_STR_AUTO);
         key = keyStr;
-        val = sdsnewlen(buf, len);
+        val = znode;  /* Store znode pointer; convert score to string at reply time */
     } else {
         serverPanic("Type not handled in SCAN callback.");
     }
@@ -1841,7 +1839,7 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
          * 4. data.pattern: the pattern string;
          * 5. data.sampled: the maxiteration limit is there in case we're
          * working on an empty dict, one with a lot of empty buckets, and
-         * for the buckets are not empty, we need to limit the spampled number
+         * for the buckets are not empty, we need to limit the sampled number
          * to prevent a long hang time caused by filtering too many keys;
          * 6. data.no_values: to control whether values will be returned or
          * only keys are returned. */
@@ -1884,11 +1882,16 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
             /* Only HSCAN and ZSCAN have values. For SCAN and SSCAN, only keys are enqueued. */
             if (o && (o->type == OBJ_HASH || o->type == OBJ_ZSET) && !no_values) {
                 void *val = fifoQueueDequeue(keys);
-                addReplyBulkCBuffer(c, val, sdslen(val));
-                /* ZSET scores are allocated as new strings (converted from double),
-                 * so they need to be freed. Hash values are just pointers into the dict. */
-                if (o->type == OBJ_ZSET)
-                    sdsfreegeneric(val);
+                if (o->type == OBJ_ZSET) {
+                    /* val is a zskiplistNode*; convert score to string on the stack */
+                    zskiplistNode *zn = (zskiplistNode*)val;
+                    char buf[MAX_D2STRING_CHARS];
+                    int len = d2string(buf, sizeof(buf), zn->score);
+                    addReplyBulkCBuffer(c, buf, len);
+                } else {
+                    /* Hash values are sds pointers into the dict */
+                    addReplyBulkCBuffer(c, val, sdslen(val));
+                }
             }
         }
 
