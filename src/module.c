@@ -15001,6 +15001,8 @@ RedisModuleDict *RM_DefragRedisModuleDict(RedisModuleDefragCtx *ctx, RedisModule
         rax* newrax = NULL;
         if ((newdict = activeDefragAlloc(dict)))
             dict = newdict;
+        /* Update rax back-pointer to dict */
+        dict->rax->alloc_size = &dict->alloc_size;
         if ((newrax = activeDefragAlloc(dict->rax)))
             dict->rax = newrax;
     }
