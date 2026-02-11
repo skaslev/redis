@@ -78,7 +78,7 @@ static int dictDefaultCompare(dictCmpCache *cache, const void *key1, const void 
 static dictEntryLink dictFindLinkInternal(dict *d, const void *key, dictEntryLink *bucket);
 dictEntryLink dictFindLinkForInsert(dict *d, const void *key, dictEntry **existing);
 static dictEntry *dictInsertKeyAtLink(dict *d, void *key __stored_key, dictEntryLink link);
-static unsigned long rev(unsigned long v);
+static inline unsigned long rev(unsigned long x);
 
 /* -------------------------- unused  --------------------------- */
 void dictSetSignedIntegerVal(dictEntry *de, int64_t val);
@@ -1532,6 +1532,15 @@ static inline unsigned long rev(unsigned long x) {
  *    we are sure we don't miss keys moving during rehashing.
  * 3) The reverse cursor is somewhat hard to understand at first, but this
  *    comment is supposed to help.
+ *
+ * PREFETCHING
+ *
+ * When 'prefetch' is set to 1, the scan will batch multiple buckets together
+ * and use CPU prefetch instructions to bring dictionary entries into cache
+ * before processing them. This improves performance by hiding memory latency.
+ * When 'prefetch' is 0, buckets are processed one at a time (traditional behavior).
+ * Note: prefetching is disabled when defragfns is provided, as defrag requires
+ * the plink parameter which is not available in the batched prefetch path.
  */
 unsigned long dictScan(dict *d,
                        unsigned long v,
@@ -1568,15 +1577,27 @@ void dictScanDefragBucket(dict *d,dictScanFunction *fn,
     }
 }
 
+/* Process multiple buckets with prefetching for better cache utilization.
+ * This function takes an array of bucket pointers, extracts the head entries,
+ * prefetches them, and then processes all entries in an interleaved manner.
+ *
+ * The 'entries' array is repurposed during execution:
+ * - On input: entries[i] points to a bucket (dictEntry**)
+ * - After initial loop: entries[i] holds the dictEntry* head of that bucket
+ * This reuse avoids allocating a separate array for the entry pointers. */
 static inline void dictScanDefragBuckets(void *privdata, dictScanFunction *fn, void **entries, int len) {
     int entry_count = 0;
+    /* Phase 1: Extract head entries from buckets and prefetch them.
+     * Compact non-empty entries to the front of the array. */
     for (int i = 0; i < len; i++) {
         dictEntry *head = *(dictEntry **)entries[i];
         if (head) {
             redis_prefetch_read(decodeMaskedPtr(head));
-            entries[entry_count++] = head;
+            entries[entry_count++] = head;  /* Repurpose: now holds dictEntry* */
         }
     }
+    /* Phase 2: Process all entries in round-robin fashion, prefetching next
+     * entries as we go. This interleaving hides memory latency. */
     int active_count = entry_count;
     while (active_count > 0) {
         for (int j = 0; j < entry_count; j++) {
@@ -1584,8 +1605,8 @@ static inline void dictScanDefragBuckets(void *privdata, dictScanFunction *fn, v
             dictEntry *next = dictGetNext(entries[j]);
             fn(privdata, entries[j], NULL);
             entries[j] = next;
-            if (entries[j]) {
-                redis_prefetch_read(decodeMaskedPtr(entries[j]));
+            if (next) {
+                redis_prefetch_read(decodeMaskedPtr(next));
             } else {
                 active_count--;
             }
@@ -1619,7 +1640,9 @@ unsigned long dictScanDefrag(dict *d,
     /* This is needed in case the scan callback tries to do dictFind or alike. */
     dictPauseRehashing(d);
 
-    int iterations = (defragfns == NULL) ? dict_scan_iterations : 1;
+    /* Disable prefetching when defragging. */
+    if (defragfns) prefetch = 0;
+    int iterations = prefetch ? dict_scan_iterations : 1;
     while (iterations--) {
         htidx0 = 0;
         if (dictIsRehashing(d) && DICTHT_SIZE(d->ht_size_exp[0]) > DICTHT_SIZE(d->ht_size_exp[1])) {
@@ -1627,7 +1650,7 @@ unsigned long dictScanDefrag(dict *d,
         }
         m0 = DICTHT_SIZE_MASK(d->ht_size_exp[htidx0]);
         if (!dictIsRehashing(d)) {
-            if (defragfns || !prefetch) {
+            if (!prefetch) {
                 dictScanDefragBucket(d, fn, defragfns, privdata, &d->ht_table[htidx0][v & m0]);
             } else {
                 buckets[bucket_count] = &d->ht_table[htidx0][v & m0];
@@ -1649,7 +1672,7 @@ unsigned long dictScanDefrag(dict *d,
         } else {
             htidx1 = 1 - htidx0;
             m1 = DICTHT_SIZE_MASK(d->ht_size_exp[htidx1]);
-            if (defragfns || !prefetch) {
+            if (!prefetch) {
                 dictScanDefragBucket(d, fn, defragfns, privdata, &d->ht_table[htidx0][v & m0]);
             } else {
                 buckets[bucket_count] = &d->ht_table[htidx0][v & m0];
@@ -1663,7 +1686,7 @@ unsigned long dictScanDefrag(dict *d,
             /* Iterate over indices in larger table that are the expansion
              * of the index pointed to by the cursor in the smaller table */
             do {
-                if (defragfns || !prefetch) {
+                if (!prefetch) {
                     dictScanDefragBucket(d, fn, defragfns, privdata, &d->ht_table[htidx1][v & m1]);
                 } else {
                     buckets[bucket_count] = &d->ht_table[htidx1][v & m1];
