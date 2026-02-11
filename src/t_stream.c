@@ -2435,7 +2435,9 @@ void xaddCommand(client *c) {
     stream *s;
     if ((kv = streamTypeLookupWriteOrCreate(c,c->argv[1],parsed_args.no_mkstream)) == NULL) return;
     s = kv->ptr;
-    size_t old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = 0;
+    if (server.memory_tracking_enabled)
+        old_alloc = kvobjAllocSize(kv);
 
     /* IDMP: Check if IID already exists, save IID for later insertion */
     XXH128_hash_t hash;
@@ -2606,7 +2608,8 @@ void xrangeGenericCommand(client *c, int rev) {
         addReplyNullArray(c);
     } else {
         if (count == -1) count = 0;
-        old_alloc = kvobjAllocSize(kv);
+        if (server.memory_tracking_enabled)
+            old_alloc = kvobjAllocSize(kv);
         streamReplyWithRange(c,s,&startid,&endid,count,rev,-1,NULL,NULL,0,NULL,NULL);
         if (server.memory_tracking_enabled)
             updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),kv,old_alloc,kvobjAllocSize(kv));
@@ -2881,7 +2884,8 @@ void xreadCommand(client *c) {
             }
             consumer = streamLookupConsumer(groups[i],consumername->ptr);
             if (consumer == NULL) {
-                old_alloc = kvobjAllocSize(o);
+                if (server.memory_tracking_enabled)
+                    old_alloc = kvobjAllocSize(o);
                 consumer = streamCreateConsumer(s,groups[i],consumername->ptr,
                                                 c->argv[streams_arg+i],
                                                 c->db->id,SCC_DEFAULT);
@@ -2933,7 +2937,8 @@ void xreadCommand(client *c) {
             unsigned long propCount = 0;
             if (noack) flags |= STREAM_RWR_NOACK;
             if (serve_history) flags |= STREAM_RWR_HISTORY;
-            old_alloc = kvobjAllocSize(o);
+            if (server.memory_tracking_enabled)
+                old_alloc = kvobjAllocSize(o);
             streamReplyWithRange(c,s,&start,NULL,count,0, min_idle_time,
                                  groups ? groups[i] : NULL,
                                  consumer, flags, &spi, &propCount);
@@ -3460,7 +3465,8 @@ NULL
             entries_read = s->entries_added;
         }
 
-        old_alloc = kvobjAllocSize(o);
+        if (server.memory_tracking_enabled)
+            old_alloc = kvobjAllocSize(o);
         streamCG *cg = streamCreateCG(s,grpname,sdslen(grpname),&id,entries_read);
         if (cg) {
             if (server.memory_tracking_enabled)
@@ -3493,7 +3499,8 @@ NULL
         keyModified(c,c->db,c->argv[2],o,0);
     } else if (!strcasecmp(opt,"DESTROY") && c->argc == 4) {
         if (cg) {
-            old_alloc = kvobjAllocSize(o);
+            if (server.memory_tracking_enabled)
+                old_alloc = kvobjAllocSize(o);
             raxRemove(s->cgroups,(unsigned char*)grpname,sdslen(grpname),NULL);
             streamDestroyCG(s, cg);
             if (server.memory_tracking_enabled)
@@ -3509,7 +3516,8 @@ NULL
             addReply(c,shared.czero);
         }
     } else if (!strcasecmp(opt,"CREATECONSUMER") && c->argc == 5) {
-        old_alloc = kvobjAllocSize(o);
+        if (server.memory_tracking_enabled)
+            old_alloc = kvobjAllocSize(o);
         streamConsumer *created = streamCreateConsumer(s,cg,c->argv[4]->ptr,c->argv[2],
                                                        c->db->id,SCC_DEFAULT);
         keyModified(c,c->db,c->argv[2],o,0);
@@ -3522,7 +3530,8 @@ NULL
         if (consumer) {
             /* Delete the consumer and returns the number of pending messages
              * that were yet associated with such a consumer. */
-            old_alloc = kvobjAllocSize(o);
+            if (server.memory_tracking_enabled)
+                old_alloc = kvobjAllocSize(o);
             pending = raxSize(consumer->pel);
             streamDelConsumer(s,cg,consumer);
             if (server.memory_tracking_enabled)
@@ -3650,7 +3659,9 @@ void xackCommand(client *c) {
     }
 
     int acknowledged = 0;
-    size_t old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = 0;
+    if (server.memory_tracking_enabled)
+        old_alloc = kvobjAllocSize(kv);
     for (int j = 3; j < c->argc; j++) {
         unsigned char buf[sizeof(streamID)];
         streamEncodeID(buf,&ids[j-3]);
@@ -3721,7 +3732,9 @@ void xackdelCommand(client *c) {
     }
 
     s = kv->ptr;
-    size_t old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = 0;
+    if (server.memory_tracking_enabled)
+        old_alloc = kvobjAllocSize(kv);
     int first_entry = 0;
     int deleted = 0, dirty = server.dirty;
     addReplyArrayLen(c, args.numids);
@@ -4149,7 +4162,9 @@ void xclaimCommand(client *c) {
 
     /* Do the actual claiming. */
     stream *s = o->ptr;
-    size_t old_alloc = kvobjAllocSize(o);
+    size_t old_alloc = 0;
+    if (server.memory_tracking_enabled)
+        old_alloc = kvobjAllocSize(o);
     streamConsumer *consumer = streamLookupConsumer(group,c->argv[3]->ptr);
     if (consumer == NULL) {
         consumer = streamCreateConsumer(o->ptr,group,c->argv[3]->ptr,c->argv[1],c->db->id,SCC_DEFAULT);
@@ -4342,7 +4357,9 @@ void xautoclaimCommand(client *c) {
 
     /* Do the actual claiming. */
     stream *s = o->ptr;
-    size_t old_alloc = kvobjAllocSize(o);
+    size_t old_alloc = 0;
+    if (server.memory_tracking_enabled)
+        old_alloc = kvobjAllocSize(o);
     streamConsumer *consumer = streamLookupConsumer(group,c->argv[3]->ptr);
     if (consumer == NULL) {
         consumer = streamCreateConsumer(o->ptr,group,c->argv[3]->ptr,c->argv[1],c->db->id,SCC_DEFAULT);
@@ -4471,7 +4488,9 @@ void xdelCommand(client *c) {
     kvobj *kv = lookupKeyWriteOrReply(c, c->argv[1], shared.czero); 
     if (kv == NULL || checkType(c, kv, OBJ_STREAM)) return;
     stream *s = kv->ptr;
-    size_t old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = 0;
+    if (server.memory_tracking_enabled)
+        old_alloc = kvobjAllocSize(kv);
 
     /* We need to sanity check the IDs passed to start. Even if not
      * a big issue, it is not great that the command is only partially
@@ -4569,7 +4588,9 @@ void xdelexCommand(client *c) {
     }
 
     stream *s = kv->ptr;
-    size_t old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = 0;
+    if (server.memory_tracking_enabled)
+        old_alloc = kvobjAllocSize(kv);
     int first_entry = 0;
     int deleted = 0;
     addReplyArrayLen(c, args.numids);
@@ -4674,7 +4695,9 @@ void xtrimCommand(client *c) {
     stream *s = kv->ptr;
 
     /* Perform the trimming. */
-    size_t old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = 0;
+    if (server.memory_tracking_enabled)
+        old_alloc = kvobjAllocSize(kv);
     int64_t deleted = streamTrim(s, &parsed_args);
     if (server.memory_tracking_enabled)
         updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),kv,old_alloc,kvobjAllocSize(kv));
@@ -4774,7 +4797,9 @@ void xinfoReplyWithStreamInfo(client *c, kvobj *kv) {
     addReplyBulkCString(c,"iids-duplicates");
     addReplyLongLong(c,s->iids_duplicates);
 
-    size_t old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = 0;
+    if (server.memory_tracking_enabled)
+        old_alloc = kvobjAllocSize(kv);
     if (!full) {
         /* XINFO STREAM <key> */
 
