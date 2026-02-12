@@ -2435,9 +2435,7 @@ void xaddCommand(client *c) {
     stream *s;
     if ((kv = streamTypeLookupWriteOrCreate(c,c->argv[1],parsed_args.no_mkstream)) == NULL) return;
     s = kv->ptr;
-    size_t old_alloc = 0;
-    if (server.memory_tracking_enabled)
-        old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = server.memory_tracking_enabled ? kvobjAllocSize(kv) : 0;
 
     /* IDMP: Check if IID already exists, save IID for later insertion */
     XXH128_hash_t hash;
@@ -3659,9 +3657,7 @@ void xackCommand(client *c) {
     }
 
     int acknowledged = 0;
-    size_t old_alloc = 0;
-    if (server.memory_tracking_enabled)
-        old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = server.memory_tracking_enabled ? kvobjAllocSize(kv) : 0;
     for (int j = 3; j < c->argc; j++) {
         unsigned char buf[sizeof(streamID)];
         streamEncodeID(buf,&ids[j-3]);
@@ -3732,9 +3728,7 @@ void xackdelCommand(client *c) {
     }
 
     s = kv->ptr;
-    size_t old_alloc = 0;
-    if (server.memory_tracking_enabled)
-        old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = server.memory_tracking_enabled ? kvobjAllocSize(kv) : 0;
     int first_entry = 0;
     int deleted = 0, dirty = server.dirty;
     addReplyArrayLen(c, args.numids);
@@ -4162,9 +4156,7 @@ void xclaimCommand(client *c) {
 
     /* Do the actual claiming. */
     stream *s = o->ptr;
-    size_t old_alloc = 0;
-    if (server.memory_tracking_enabled)
-        old_alloc = kvobjAllocSize(o);
+    size_t old_alloc = server.memory_tracking_enabled ? kvobjAllocSize(o) : 0;
     streamConsumer *consumer = streamLookupConsumer(group,c->argv[3]->ptr);
     if (consumer == NULL) {
         consumer = streamCreateConsumer(o->ptr,group,c->argv[3]->ptr,c->argv[1],c->db->id,SCC_DEFAULT);
@@ -4357,9 +4349,7 @@ void xautoclaimCommand(client *c) {
 
     /* Do the actual claiming. */
     stream *s = o->ptr;
-    size_t old_alloc = 0;
-    if (server.memory_tracking_enabled)
-        old_alloc = kvobjAllocSize(o);
+    size_t old_alloc = server.memory_tracking_enabled ? kvobjAllocSize(o) : 0;
     streamConsumer *consumer = streamLookupConsumer(group,c->argv[3]->ptr);
     if (consumer == NULL) {
         consumer = streamCreateConsumer(o->ptr,group,c->argv[3]->ptr,c->argv[1],c->db->id,SCC_DEFAULT);
@@ -4488,9 +4478,7 @@ void xdelCommand(client *c) {
     kvobj *kv = lookupKeyWriteOrReply(c, c->argv[1], shared.czero); 
     if (kv == NULL || checkType(c, kv, OBJ_STREAM)) return;
     stream *s = kv->ptr;
-    size_t old_alloc = 0;
-    if (server.memory_tracking_enabled)
-        old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = server.memory_tracking_enabled ? kvobjAllocSize(kv) : 0;
 
     /* We need to sanity check the IDs passed to start. Even if not
      * a big issue, it is not great that the command is only partially
@@ -4588,9 +4576,7 @@ void xdelexCommand(client *c) {
     }
 
     stream *s = kv->ptr;
-    size_t old_alloc = 0;
-    if (server.memory_tracking_enabled)
-        old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = server.memory_tracking_enabled ? kvobjAllocSize(kv) : 0;
     int first_entry = 0;
     int deleted = 0;
     addReplyArrayLen(c, args.numids);
@@ -4695,9 +4681,7 @@ void xtrimCommand(client *c) {
     stream *s = kv->ptr;
 
     /* Perform the trimming. */
-    size_t old_alloc = 0;
-    if (server.memory_tracking_enabled)
-        old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = server.memory_tracking_enabled ? kvobjAllocSize(kv) : 0;
     int64_t deleted = streamTrim(s, &parsed_args);
     if (server.memory_tracking_enabled)
         updateSlotAllocSize(c->db,getKeySlot(c->argv[1]->ptr),kv,old_alloc,kvobjAllocSize(kv));
@@ -4797,9 +4781,7 @@ void xinfoReplyWithStreamInfo(client *c, kvobj *kv) {
     addReplyBulkCString(c,"iids-duplicates");
     addReplyLongLong(c,s->iids_duplicates);
 
-    size_t old_alloc = 0;
-    if (server.memory_tracking_enabled)
-        old_alloc = kvobjAllocSize(kv);
+    size_t old_alloc = server.memory_tracking_enabled ? kvobjAllocSize(kv) : 0;
     if (!full) {
         /* XINFO STREAM <key> */
 
