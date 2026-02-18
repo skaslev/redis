@@ -1860,13 +1860,20 @@ void scanGenericCommand(client *c, robj *o, unsigned long long cursor) {
         if (o == NULL && use_pattern && server.cluster_enabled) {
             onlydidx = patternHashSlot(pat, patlen);
         }
+        /* Low-count scans that always start from cursor 0 (for example, repeated
+         * "SCAN 0" microbenchmarks) regress when prefetch is forced on because
+         * dictScan advances in prefetch-sized chunks and returns many more
+         * elements per call. Keep prefetch for larger COUNT values and for
+         * resumed scans (non-zero cursor), where it is beneficial. */
+        int use_prefetch = (count >= 16) || (cursor != 0);
+
         do {
             /* In cluster mode there is a separate dictionary for each slot.
              * If cursor is empty, we should try exploring next non-empty slot. */
             if (o == NULL) {
-                cursor = kvstoreScan(c->db->keys, cursor, onlydidx, 1, scanCallback, scanShouldSkipDict, &data);
+                cursor = kvstoreScan(c->db->keys, cursor, onlydidx, use_prefetch, scanCallback, scanShouldSkipDict, &data);
             } else {
-                cursor = dictScan(ht, cursor, 1, scanCallback, &data);
+                cursor = dictScan(ht, cursor, use_prefetch, scanCallback, &data);
             }
         } while (cursor && maxiterations-- && data.sampled < count);
 
