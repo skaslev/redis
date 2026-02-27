@@ -48,19 +48,23 @@
 #define ZSL_OFFSET_MAX_ELE  UINT16_MAX
 #define ZSL_OFFSET_NO_ELE   UINT16_MAX
 
-const void *zslGetNodeElementForDict(const void *node);
+/* Hashtable callback: extract sds element from zskiplistNode */
+static const void *zsetHashtableGetKey(const void *entry) {
+    const zskiplistNode *node = entry;
+    return zslGetNodeElement((zskiplistNode*)node);
+}
 
-/* dictType for zset's dict (maps sds to zskiplistNode*) */
-dictType zsetDictType = {
-    dictSdsHash,        /* hash function */
-    NULL,               /* key dup */
-    NULL,               /* val dup */
-    dictSdsKeyCompare,  /* compares embedded sds by keyFromStoredKey */
-    NULL,               /* key destructor - skiplist owns the node memory */
-    NULL,               /* val destructor */
-    NULL,               /* allow to expand */
-    .no_value = 1,      /* no values stored (only nodes) */
-    .keyFromStoredKey = zslGetNodeElementForDict,  /* extract embedded sds from node */
+/* Hashtable callback: compare sds keys */
+static int zsetHashtableKeyCompare(const void *key1, const void *key2) {
+    return sdscmp((sds)key1, (sds)key2);
+}
+
+/* hashtableType for zset's hashtable (stores zskiplistNode*, keyed by node->ele) */
+hashtableType zsetHashtableType = {
+    .entryGetKey = zsetHashtableGetKey,
+    .hashFunction = dictSdsHash,
+    .keyCompare = zsetHashtableKeyCompare,
+    .entryDestructor = NULL,  /* skiplist owns the node memory */
 };
 
 /*-----------------------------------------------------------------------------
@@ -130,12 +134,6 @@ sds zslGetNodeElement(const zskiplistNode *node) {
     zskiplistNodeInfo *info = zslGetNodeInfo(node);
     debugServerAssert(info->sdsoffset != ZSL_OFFSET_NO_ELE);
     return (char*)node + info->sdsoffset;
-}
-
-/* Wrapper for dict getKeyId callback - extracts sds from node pointer.
- * This allows the dict to store zskiplistNode* but look them up using sds. */
-const void *zslGetNodeElementForDict(const void *node) {
-    return zslGetNodeElement((zskiplistNode*)node);
 }
 
 /* Create a skiplist header node with ZSKIPLIST_MAXLEVEL levels */
@@ -551,7 +549,7 @@ zskiplistNode *zslNthInRange(zskiplist *zsl, zrangespec *range, long n, unsigned
  * range->maxex). When inclusive a score >= min && score <= max is deleted.
  * Note that this function takes the reference to the hash table view of the
  * sorted set, in order to remove the elements from the hash table too. */
-static unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec *range, dict *dict) {
+static unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec *range, hashtable *ht) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     unsigned long removed = 0;
     int i;
@@ -571,7 +569,7 @@ static unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec *range, di
     while (x && zslValueLteMax(x->score, range)) {
         zskiplistNode *next = x->level[0].forward;
         zslUnlinkNode(zsl,x,update);
-        dictDelete(dict,zslGetNodeElement(x));
+        hashtableDelete(ht, zslGetNodeElement(x));
         zslFreeNode(zsl, x); /* Here is where x->ele is actually released. */
         removed++;
         x = next;
@@ -579,7 +577,7 @@ static unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec *range, di
     return removed;
 }
 
-static unsigned long zslDeleteRangeByLex(zskiplist *zsl, zlexrangespec *range, dict *dict) {
+static unsigned long zslDeleteRangeByLex(zskiplist *zsl, zlexrangespec *range, hashtable *ht) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     unsigned long removed = 0;
     int i;
@@ -600,7 +598,7 @@ static unsigned long zslDeleteRangeByLex(zskiplist *zsl, zlexrangespec *range, d
     while (x && zslLexValueLteMax(zslGetNodeElement(x),range)) {
         zskiplistNode *next = x->level[0].forward;
         zslUnlinkNode(zsl,x,update);
-        dictDelete(dict,zslGetNodeElement(x));
+        hashtableDelete(ht, zslGetNodeElement(x));
         zslFreeNode(zsl, x); /* Here is where x->ele is actually released. */
         removed++;
         x = next;
@@ -610,7 +608,7 @@ static unsigned long zslDeleteRangeByLex(zskiplist *zsl, zlexrangespec *range, d
 
 /* Delete all the elements with rank between start and end from the skiplist.
  * Start and end are inclusive. Note that start and end need to be 1-based */
-static unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, unsigned int end, dict *dict) {
+static unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, unsigned int end, hashtable *ht) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
     unsigned long traversed = 0, removed = 0;
     int i;
@@ -629,7 +627,7 @@ static unsigned long zslDeleteRangeByRank(zskiplist *zsl, unsigned int start, un
     while (x && traversed <= end) {
         zskiplistNode *next = x->level[0].forward;
         zslUnlinkNode(zsl,x,update);
-        dictDelete(dict,zslGetNodeElement(x));
+        hashtableDelete(ht, zslGetNodeElement(x));
         zslFreeNode(zsl, x);
         removed++;
         traversed++;
@@ -1392,10 +1390,9 @@ size_t zsetAllocSize(const robj *o) {
     if (o->encoding == OBJ_ENCODING_LISTPACK) {
         size = lpBytes(o->ptr);
     } else if (o->encoding == OBJ_ENCODING_SKIPLIST) {
-        dict *d = ((zset*)o->ptr)->dict;
+        hashtable *ht = ((zset*)o->ptr)->ht;
         zskiplist *zsl = ((zset*)o->ptr)->zsl;
-        size = sizeof(zset) + zslAllocSize(zsl) +
-            sizeof(dict) + dictMemUsage(d);
+        size = sizeof(zset) + zslAllocSize(zsl) + hashtableMemUsage(ht);
     } else {
         serverPanic("Unknown sorted set encoding");
     }
@@ -1419,7 +1416,7 @@ robj *zsetTypeCreate(size_t size_hint, size_t val_len_hint) {
 
     robj *zobj = createZsetObject();
     zset *zs = zobj->ptr;
-    dictExpand(zs->dict, size_hint);
+    hashtableExpand(zs->ht, size_hint);
     return zobj;
 }
 
@@ -1459,11 +1456,11 @@ void zsetConvertAndExpand(robj *zobj, int encoding, unsigned long cap) {
             serverPanic("Unknown target encoding");
 
         zs = zmalloc(sizeof(*zs));
-        zs->dict = dictCreate(&zsetDictType);
+        zs->ht = hashtableCreate(&zsetHashtableType);
         zs->zsl = zslCreate();
 
-        /* Presize the dict to avoid rehashing */
-        dictExpand(zs->dict, cap);
+        /* Presize the hashtable to avoid rehashing */
+        hashtableExpand(zs->ht, cap);
 
         eptr = lpSeek(zl,0);
         if (eptr != NULL) {
@@ -1480,7 +1477,7 @@ void zsetConvertAndExpand(robj *zobj, int encoding, unsigned long cap) {
                 ele = sdsnewlen((char*)vstr,vlen);
 
             node = zslInsert(zs->zsl,score,ele);
-            serverAssert(dictAdd(zs->dict, node, NULL) == DICT_OK);
+            serverAssert(hashtableAdd(zs->ht, node));
             sdsfree(ele); /* zslInsert copied it, we can free our copy */
             zzlNext(zl,&eptr,&sptr);
         }
@@ -1497,7 +1494,7 @@ void zsetConvertAndExpand(robj *zobj, int encoding, unsigned long cap) {
         /* Approach similar to zslFree(), since we want to free the skiplist at
          * the same time as creating the listpack. */
         zs = zobj->ptr;
-        dictRelease(zs->dict);
+        hashtableRelease(zs->ht);
         node = zs->zsl->header->level[0].forward;
         zfree(zs->zsl->header);
 
@@ -1543,9 +1540,9 @@ int zsetScore(robj *zobj, sds member, double *score) {
         if (zzlFind(zobj->ptr, member, score) == NULL) return C_ERR;
     } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = zobj->ptr;
-        dictEntry *de = dictFind(zs->dict, member);
-        if (de == NULL) return C_ERR;
-        zskiplistNode *znode = dictGetKey(de);
+        void *entry;
+        if (!hashtableFind(zs->ht, member, &entry)) return C_ERR;
+        zskiplistNode *znode = entry;
         *score = znode->score;
     } else {
         serverPanic("Unknown sorted set encoding");
@@ -1674,16 +1671,16 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
     if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = zobj->ptr;
         zskiplistNode *znode;
-        dictEntry *de;
-        dictEntryLink bucket, link;
+        void *existing;
+        hashtablePosition pos;
 
-        /* Use dictFindLink to find the element and get the bucket for potential insertion.
-         * This avoids a second lookup in dictAdd() if the element doesn't exist. */
-        link = dictFindLink(zs->dict, ele, &bucket);
+        /* Use hashtableFindPositionForInsert to find the element and get position for potential insertion.
+         * This avoids a second lookup in hashtableAdd() if the element doesn't exist. */
+        int found = !hashtableFindPositionForInsert(zs->ht, ele, &pos, &existing);
 
-        if (link != NULL) {
-            /* Element exists - get the dictEntry from the link */
-            de = *link;
+        if (found) {
+            /* Element exists */
+            znode = existing;
 
             /* NX? Return, same element already exists. */
             if (nx) {
@@ -1691,8 +1688,6 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
                 return 1;
             }
 
-            /* Get the node pointer from dict entry */
-            znode = dictGetKey(de);
             curscore = znode->score;
 
             /* Prepare the score for the increment if needed. */
@@ -1717,7 +1712,7 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
                 zslUpdateScore(zs->zsl, znode, score);
                 /* Note that we did not remove the original element from
                  * the hash table representing the sorted set, so we don't
-                 * need to update the dict - the node pointer stays the same. */
+                 * need to update the hashtable - the node pointer stays the same. */
                 *out_flags |= ZADD_OUT_UPDATED;
             }
             return 1;
@@ -1725,8 +1720,8 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
             /* Element doesn't exist - create node with embedded sds and add to skiplist */
             znode = zslInsert(zs->zsl, score, ele);
 
-            /* Add node pointer to dict using the bucket we already found */
-            dictSetKeyAtLink(zs->dict, znode, &bucket, 1);
+            /* Add node pointer to hashtable using the position we already found */
+            hashtableInsertAtPosition(zs->ht, znode, &pos);
 
             *out_flags |= ZADD_OUT_ADDED;
             if (newscore) *newscore = score;
@@ -1741,26 +1736,21 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
     return 0; /* Never reached. */
 }
 
-/* Deletes the element 'ele' from the sorted set encoded as a skiplist+dict,
+/* Deletes the element 'ele' from the sorted set encoded as a skiplist+hashtable,
  * returning 1 if the element existed and was deleted, 0 otherwise (the
- * element was not there). It does not resize the dict after deleting the
+ * element was not there). It does not resize the hashtable after deleting the
  * element. */
 static int zsetRemoveFromSkiplist(zset *zs, sds ele) {
-    dictEntry *de;
+    void *entry;
 
-    de = dictUnlink(zs->dict,ele);
-    if (de != NULL) {
-        /* Get the node and score in order to delete from the skiplist later. */
-        zskiplistNode *znode = dictGetKey(de);
+    if (hashtablePop(zs->ht, ele, &entry)) {
+        /* Get the node pointer */
+        zskiplistNode *znode = entry;
 
-        /* Delete from the hash table and later from the skiplist.
-         * Note that the order is important: deleting from the skiplist
-         * actually releases the SDS string representing the element,
-         * which is shared between the skiplist and the hash table, so
-         * we need to delete from the skiplist as the final step. */
-        dictFreeUnlinkedEntry(zs->dict,de);
-
-        /* Delete from skiplist. */
+        /* Delete from skiplist.
+         * Note: deleting from the skiplist releases the SDS string representing
+         * the element, which is shared between the skiplist and the hash table.
+         * We already removed from hashtable, now delete from skiplist. */
         zslDelete(zs->zsl, znode);
 
         return 1;
@@ -1839,11 +1829,10 @@ long zsetRank(robj *zobj, sds ele, int reverse, double *output_score) {
     } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = zobj->ptr;
         zskiplist *zsl = zs->zsl;
-        dictEntry *de;
+        void *entry;
 
-        de = dictFind(zs->dict,ele);
-        if (de != NULL) {
-            zskiplistNode *n = dictGetKey(de);
+        if (hashtableFind(zs->ht, ele, &entry)) {
+            zskiplistNode *n = entry;
             rank = zslGetRankByNode(zsl, n);
             /* Existing elements always have a rank. */
             serverAssert(rank != 0);
@@ -1885,7 +1874,7 @@ robj *zsetDup(robj *o) {
         zobj = createZsetObject();
         zs = o->ptr;
         new_zs = zobj->ptr;
-        dictExpand(new_zs->dict,dictSize(zs->dict));
+        hashtableExpand(new_zs->ht, hashtableSize(zs->ht));
         zskiplist *zsl = zs->zsl;
         zskiplistNode *ln;
         sds ele;
@@ -1901,7 +1890,7 @@ robj *zsetDup(robj *o) {
         while (llen--) {
             ele = zslGetNodeElement(ln);
             zskiplistNode *znode = zslInsert(new_zs->zsl,ln->score,ele);
-            dictAdd(new_zs->dict, znode, NULL);
+            serverAssert(hashtableAdd(new_zs->ht, znode));
             ln = ln->backward;
         }
     } else {
@@ -1931,8 +1920,9 @@ void zsetReplyFromListpackEntry(client *c, listpackEntry *e) {
 void zsetTypeRandomElement(robj *zsetobj, unsigned long zsetsize, listpackEntry *key, double *score) {
     if (zsetobj->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = zsetobj->ptr;
-        dictEntry *de = dictGetFairRandomKey(zs->dict);
-        zskiplistNode *znode = dictGetKey(de);
+        void *entry;
+        hashtableFairRandomEntry(zs->ht, &entry);
+        zskiplistNode *znode = entry;
         sds s = zslGetNodeElement(znode);
         key->sval = (unsigned char*)s;
         key->slen = sdslen(s);
@@ -2116,7 +2106,7 @@ void zremCommand(client *c) {
     if (server.memory_tracking_enabled)
         oldsize = kvobjAllocSize(zobj);
     if (zobj->encoding == OBJ_ENCODING_SKIPLIST)
-        dictPauseAutoResize(((zset*)zobj->ptr)->dict);
+        hashtablePauseAutoShrink(((zset*)zobj->ptr)->ht);
     for (j = 2; j < c->argc; j++) {
         if (zsetDel(zobj, c->argv[j]->ptr)) deleted++;
         if (zsetLength(zobj) == 0) {
@@ -2129,8 +2119,8 @@ void zremCommand(client *c) {
         }
     }
     if (!keyremoved && zobj->encoding == OBJ_ENCODING_SKIPLIST) {
-        dictResumeAutoResize(((zset*)zobj->ptr)->dict);
-        dictShrinkIfNeeded(((zset*)zobj->ptr)->dict);
+        hashtableResumeAutoShrink(((zset*)zobj->ptr)->ht);
+        hashtableShrinkIfNeeded(((zset*)zobj->ptr)->ht);
     }
 
     if (server.memory_tracking_enabled && !keyremoved)
@@ -2234,27 +2224,27 @@ void zremrangeGenericCommand(client *c, zrange_type rangetype) {
         }
     } else if (zobj->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = zobj->ptr;
-        dictPauseAutoResize(zs->dict);
+        hashtablePauseAutoShrink(zs->ht);
         switch(rangetype) {
         case ZRANGE_AUTO:
         case ZRANGE_RANK:
-            deleted = zslDeleteRangeByRank(zs->zsl,start+1,end+1,zs->dict);
+            deleted = zslDeleteRangeByRank(zs->zsl,start+1,end+1,zs->ht);
             break;
         case ZRANGE_SCORE:
-            deleted = zslDeleteRangeByScore(zs->zsl,&range,zs->dict);
+            deleted = zslDeleteRangeByScore(zs->zsl,&range,zs->ht);
             break;
         case ZRANGE_LEX:
-            deleted = zslDeleteRangeByLex(zs->zsl,&lexrange,zs->dict);
+            deleted = zslDeleteRangeByLex(zs->zsl,&lexrange,zs->ht);
             break;
         }
-        dictResumeAutoResize(zs->dict);
-        if (dictSize(zs->dict) == 0) {
+        hashtableResumeAutoShrink(zs->ht);
+        if (hashtableSize(zs->ht) == 0) {
             if (server.memory_tracking_enabled)
                 updateSlotAllocSize(c->db, getKeySlot(key->ptr), zobj, oldsize, kvobjAllocSize(zobj));
             dbDeleteSkipKeysizesUpdate(c->db, key);
             keyremoved = 1;
         } else {
-            dictShrinkIfNeeded(zs->dict);
+            hashtableShrinkIfNeeded(zs->ht);
         }
     } else {
         serverPanic("Unknown sorted set encoding");
@@ -2313,9 +2303,10 @@ typedef struct {
                 int ii;
             } is;
             struct {
-                dict *dict;
-                dictIterator *di;
-                dictEntry *de;
+                hashtable *ht;
+                hashtableIterator hi;
+                void *entry;
+                int started;
             } ht;
             struct {
                 unsigned char *lp;
@@ -2372,9 +2363,9 @@ void zuiInitIterator(zsetopsrc *op) {
             it->is.is = op->subject->ptr;
             it->is.ii = 0;
         } else if (op->encoding == OBJ_ENCODING_HT) {
-            it->ht.dict = op->subject->ptr;
-            it->ht.di = dictGetIterator(op->subject->ptr);
-            it->ht.de = dictNext(it->ht.di);
+            it->ht.ht = op->subject->ptr;
+            hashtableInitIterator(&it->ht.hi, it->ht.ht, 0);
+            it->ht.started = hashtableNext(&it->ht.hi, &it->ht.entry);
         } else if (op->encoding == OBJ_ENCODING_LISTPACK) {
             it->lp.lp = op->subject->ptr;
             it->lp.p = lpFirst(it->lp.lp);
@@ -2413,7 +2404,7 @@ void zuiClearIterator(zsetopsrc *op) {
         if (op->encoding == OBJ_ENCODING_INTSET) {
             UNUSED(it); /* skip */
         } else if (op->encoding == OBJ_ENCODING_HT) {
-            dictReleaseIterator(it->ht.di);
+            hashtableCleanupIterator(&it->ht.hi);
         } else if (op->encoding == OBJ_ENCODING_LISTPACK) {
             UNUSED(it);
         } else {
@@ -2485,13 +2476,13 @@ int zuiNext(zsetopsrc *op, zsetopval *val) {
             /* Move to next element. */
             it->is.ii++;
         } else if (op->encoding == OBJ_ENCODING_HT) {
-            if (it->ht.de == NULL)
+            if (!it->ht.started)
                 return 0;
-            val->ele = dictGetKey(it->ht.de);
+            val->ele = it->ht.entry;  /* Entry is sds directly */
             val->score = 1.0;
 
             /* Move to next element. */
-            it->ht.de = dictNext(it->ht.di);
+            it->ht.started = hashtableNext(&it->ht.hi, &it->ht.entry);
         } else if (op->encoding == OBJ_ENCODING_LISTPACK) {
             if (it->lp.p == NULL)
                 return 0;
@@ -2619,9 +2610,9 @@ int zuiFind(zsetopsrc *op, zsetopval *val, double *score) {
             }
         } else if (op->encoding == OBJ_ENCODING_SKIPLIST) {
             zset *zs = op->subject->ptr;
-            dictEntry *de;
-            if ((de = dictFind(zs->dict,val->ele)) != NULL) {
-                zskiplistNode *znode = dictGetKey(de);
+            void *entry;
+            if (hashtableFind(zs->ht, val->ele, &entry)) {
+                zskiplistNode *znode = entry;
                 *score = znode->score;
                 return 1;
             } else {
@@ -2682,23 +2673,23 @@ inline static void zunionInterAggregate(double *target, double val, int aggregat
     }
 }
 
-static size_t zsetDictGetMaxElementLength(dict *d, size_t *totallen) {
-    dictIterator di;
-    dictEntry *de;
+static size_t zsetHashtableGetMaxElementLength(hashtable *ht, size_t *totallen) {
+    hashtableIterator iter;
+    void *entry;
     size_t maxelelen = 0;
 
-    dictInitIterator(&di, d);
+    hashtableInitIterator(&iter, ht, 0);
 
-    while((de = dictNext(&di)) != NULL) {
-        /* Extract sds from the node (key is zskiplistNode*) */
-        zskiplistNode *znode = dictGetKey(de);
+    while (hashtableNext(&iter, &entry)) {
+        /* Entry is zskiplistNode* */
+        zskiplistNode *znode = entry;
         sds ele = zslGetNodeElement(znode);
         if (sdslen(ele) > maxelelen) maxelelen = sdslen(ele);
         if (totallen)
             (*totallen) += sdslen(ele);
     }
 
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 
     return maxelelen;
 }
@@ -2749,7 +2740,7 @@ static void zdiffAlgorithm1(zsetopsrc *src, long setnum, zset *dstzset, size_t *
         if (!exists) {
             tmp = zuiNewSdsFromValue(&zval);
             znode = zslInsert(dstzset->zsl,zval.score,tmp);
-            dictAdd(dstzset->dict, znode, NULL);
+            serverAssert(hashtableAdd(dstzset->ht, znode));
             if (sdslen(tmp) > *maxelelen) *maxelelen = sdslen(tmp);
             (*totelelen) += sdslen(tmp);
             sdsfree(tmp); /* zslInsert copied it, we can free our copy */
@@ -2790,16 +2781,16 @@ static void zdiffAlgorithm2(zsetopsrc *src, long setnum, zset *dstzset, size_t *
             if (j == 0) {
                 tmp = zuiNewSdsFromValue(&zval);
                 znode = zslInsert(dstzset->zsl,zval.score,tmp);
-                dictAdd(dstzset->dict, znode, NULL);
+                serverAssert(hashtableAdd(dstzset->ht, znode));
                 cardinality++;
                 sdsfree(tmp); /* zslInsert copied it, we can free our copy */
             } else {
-                dictPauseAutoResize(dstzset->dict);
+                hashtablePauseAutoShrink(dstzset->ht);
                 tmp = zuiSdsFromValue(&zval);
                 if (zsetRemoveFromSkiplist(dstzset, tmp)) {
                     cardinality--;
                 }
-                dictResumeAutoResize(dstzset->dict);
+                hashtableResumeAutoShrink(dstzset->ht);
             }
 
             /* Exit if result set is empty as any additional removal
@@ -2814,12 +2805,12 @@ static void zdiffAlgorithm2(zsetopsrc *src, long setnum, zset *dstzset, size_t *
         if (cardinality == 0) break;
     }
 
-    /* Resize dict if needed after removing multiple elements */
-    dictShrinkIfNeeded(dstzset->dict);
+    /* Resize hashtable if needed after removing multiple elements */
+    hashtableShrinkIfNeeded(dstzset->ht);
 
     /* Using this algorithm, we can't calculate the max element as we go,
      * we have to iterate through all elements to find the max one after. */
-    *maxelelen = zsetDictGetMaxElementLength(dstzset->dict, totelelen);
+    *maxelelen = zsetHashtableGetMaxElementLength(dstzset->ht, totelelen);
 }
 
 static int zsetChooseDiffAlgorithm(zsetopsrc *src, long setnum) {
@@ -3061,7 +3052,7 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
                 } else if (j == setnum) {
                     tmp = zuiNewSdsFromValue(&zval);
                     znode = zslInsert(dstzset->zsl,score,tmp);
-                    dictAdd(dstzset->dict, znode, NULL);
+                    serverAssert(hashtableAdd(dstzset->ht, znode));
                     totelelen += sdslen(tmp);
                     if (sdslen(tmp) > maxelelen) maxelelen = sdslen(tmp);
                     sdsfree(tmp); /* zslInsert copied it, we can free our copy */
@@ -3070,14 +3061,14 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
             zuiClearIterator(&src[0]);
         }
     } else if (op == SET_OP_UNION) {
-        dictIterator di;
-        dictEntry *de;
+        hashtableIterator hi;
+        void *entry;
         double score;
 
         if (setnum) {
             /* Our union is at least as large as the largest set.
-             * Resize the dictionary ASAP to avoid useless rehashing. */
-            dictExpand(dstzset->dict,zuiLength(&src[setnum-1]));
+             * Resize the hashtable ASAP to avoid useless rehashing. */
+            hashtableExpand(dstzset->ht, zuiLength(&src[setnum-1]));
         }
 
         /* Step 1: Iterate all sorted sets and aggregate scores.
@@ -3091,12 +3082,13 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
                 score = zuiWeightedScore(zval.score, src[i].weight, aggregate);
                 if (isnan(score)) score = 0;
 
-                /* Search for this element in the dict (which stores node pointers). */
-                dictEntryLink bucket, link;
-                link = dictFindLink(dstzset->dict, zuiSdsFromValue(&zval), &bucket);
-                
-                if (link == NULL) {  /* if not exists */
-                    /* New element: create node and insert into dict */
+                /* Search for this element in the hashtable (which stores node pointers). */
+                void *existing;
+                hashtablePosition pos;
+                int found = !hashtableFindPositionForInsert(dstzset->ht, zuiSdsFromValue(&zval), &pos, &existing);
+
+                if (!found) {  /* if not exists */
+                    /* New element: create node and insert into hashtable */
                     tmp = zuiNewSdsFromValue(&zval);
                     /* Remember the longest single element encountered,
                      * to understand if it's possible to convert to listpack
@@ -3106,13 +3098,12 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
 
                     /* Create node with embedded sds and score */
                     znode = zslCreateNode(dstzset->zsl, zslRandomLevel(), score, tmp);
-                    /* Add node pointer to dict using the bucket we already found */
-                    dictSetKeyAtLink(dstzset->dict, znode, &bucket, 1);
+                    /* Add node pointer to hashtable using the position we already found */
+                    hashtableInsertAtPosition(dstzset->ht, znode, &pos);
                     sdsfree(tmp); /* zslCreateNode copied it, we can free our copy */
                 } else {
                     /* Existing element: aggregate score */
-                    de = *link;
-                    znode = dictGetKey(de);
+                    znode = existing;
                     double newscore = znode->score;
                     zunionInterAggregate(&newscore, score, aggregate);
                     znode->score = newscore;
@@ -3121,14 +3112,14 @@ void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIndex, in
             zuiClearIterator(&src[i]);
         }
 
-        /* Step 2: Done filling dict with nodes and updating scores. Now insert skiplist */
-        dictInitIterator(&di, dstzset->dict);
+        /* Step 2: Done filling hashtable with nodes and updating scores. Now insert skiplist */
+        hashtableInitIterator(&hi, dstzset->ht, 0);
 
-        while((de = dictNext(&di)) != NULL) {
-            zskiplistNode *znode = dictGetKey(de);
+        while (hashtableNext(&hi, &entry)) {
+            zskiplistNode *znode = entry;
             zslInsertNode(dstzset->zsl, znode);
         }
-        dictResetIterator(&di);
+        hashtableCleanupIterator(&hi);
     } else if (op == SET_OP_DIFF) {
         zdiff(src, setnum, dstzset, &maxelelen, &totelelen);
     } else {
@@ -4541,8 +4532,9 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
         if (zsetobj->encoding == OBJ_ENCODING_SKIPLIST) {
             zset *zs = zsetobj->ptr;
             while (count--) {
-                dictEntry *de = dictGetFairRandomKey(zs->dict);
-                zskiplistNode *znode = dictGetKey(de);
+                void *entry;
+                hashtableFairRandomEntry(zs->ht, &entry);
+                zskiplistNode *znode = entry;
                 sds key = zslGetNodeElement(znode);
                 if (withscores && c->resp > 2)
                     addReplyArrayLen(c,2);
@@ -4628,51 +4620,56 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
     /* CASE 3:
      * The number of elements inside the zset is not greater than
      * ZRANDMEMBER_SUB_STRATEGY_MUL times the number of requested elements.
-     * In this case we create a dict from scratch with all the elements, and
+     * In this case we create a hashtable from scratch with all the elements, and
      * subtract random elements to reach the requested number of elements.
      *
      * This is done because if the number of requested elements is just
      * a bit less than the number of elements in the set, the natural approach
      * used into CASE 4 is highly inefficient. */
     if (count*ZRANDMEMBER_SUB_STRATEGY_MUL > size) {
-        /* Hashtable encoding (generic implementation) */
-        dict *d = dictCreate(&sdsReplyDictType);
-        dictExpand(d, size);
-        /* Add all the elements into the temporary dictionary. */
+        /* Use temporary struct to store key+score */
+        typedef struct {
+            sds key;
+            double score;
+        } zrandEntry;
+
+        /* Hashtable type for zrandEntry - key is entry->key */
+        zrandEntry **entries = zmalloc(size * sizeof(zrandEntry*));
+        unsigned long idx = 0;
+
+        /* Add all the elements into the temporary array. */
         while (zuiNext(&src, &zval)) {
-            sds key = zuiNewSdsFromValue(&zval);
-            dictEntry *de = dictAddRaw(d, key, NULL);
-            serverAssert(de);
-            if (withscores)
-                dictSetDoubleVal(de, zval.score);
+            zrandEntry *e = zmalloc(sizeof(zrandEntry));
+            e->key = zuiNewSdsFromValue(&zval);
+            e->score = zval.score;
+            entries[idx++] = e;
         }
-        serverAssert(dictSize(d) == size);
+        serverAssert(idx == size);
 
-        /* Remove random elements to reach the right count. */
-        while (size > count) {
-            dictEntry *de;
-            de = dictGetFairRandomKey(d);
-            dictUnlink(d,dictGetKey(de));
-            sdsfree(dictGetKey(de));
-            dictFreeUnlinkedEntry(d,de);
-            size--;
+        /* Shuffle and pick first 'count' elements (Fisher-Yates shuffle partial) */
+        for (unsigned long i = 0; i < count && i < size; i++) {
+            unsigned long j = i + (random() % (size - i));
+            zrandEntry *tmp = entries[i];
+            entries[i] = entries[j];
+            entries[j] = tmp;
         }
 
-        /* Reply with what's in the dict and release memory */
-        dictIterator di;
-        dictEntry *de;
-
-        dictInitIterator(&di, d);
-        while ((de = dictNext(&di)) != NULL) {
+        /* Reply with first 'count' elements and release memory */
+        for (unsigned long i = 0; i < count; i++) {
             if (withscores && c->resp > 2)
                 addReplyArrayLen(c,2);
-            addReplyBulkSds(c, dictGetKey(de));
+            addReplyBulkSds(c, entries[i]->key);
             if (withscores)
-                addReplyDouble(c, dictGetDoubleVal(de));
+                addReplyDouble(c, entries[i]->score);
+            zfree(entries[i]);
         }
 
-        dictResetIterator(&di);
-        dictRelease(d);
+        /* Free remaining entries */
+        for (unsigned long i = count; i < size; i++) {
+            sdsfree(entries[i]->key);
+            zfree(entries[i]);
+        }
+        zfree(entries);
     }
 
     /* CASE 4: We have a big zset compared to the requested number of elements.
@@ -4682,19 +4679,19 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
     else {
         /* Hashtable encoding (generic implementation) */
         unsigned long added = 0;
-        dict *d = dictCreate(&hashDictType);
-        dictExpand(d, count);
+        hashtable *ht = hashtableCreate(&sdsHashtableType);
+        hashtableExpand(ht, count);
 
         while (added < count) {
             listpackEntry key;
             double score;
             zsetTypeRandomElement(zsetobj, size, &key, withscores ? &score: NULL);
 
-            /* Try to add the object to the dictionary. If it already exists
+            /* Try to add the object to the hashtable. If it already exists
             * free it, otherwise increment the number of objects we have
-            * in the result dictionary. */
+            * in the result hashtable. */
             sds skey = zsetSdsFromListpackEntry(&key);
-            if (dictAdd(d,skey,NULL) != DICT_OK) {
+            if (!hashtableAdd(ht, skey)) {
                 sdsfree(skey);
                 continue;
             }
@@ -4708,7 +4705,7 @@ void zrandmemberWithCountCommand(client *c, long l, int withscores) {
         }
 
         /* Release memory */
-        dictRelease(d);
+        hashtableRelease(ht);
     }
     zuiClearIterator(&src);
 out:

@@ -470,14 +470,13 @@ void fillCommandCDF(client *c, struct hdr_histogram* histogram) {
 
 /* latencyCommand() helper to produce for all commands,
  * a per command cumulative distribution of latencies. */
-void latencyAllCommandsFillCDF(client *c, dict *commands, int *command_with_data) {
-    dictIterator di;
-    dictEntry *de;
-    struct redisCommand *cmd;
+void latencyAllCommandsFillCDF(client *c, hashtable *commands, int *command_with_data) {
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitSafeIterator(&di, commands);
-    while((de = dictNext(&di)) != NULL) {
-        cmd = (struct redisCommand *) dictGetVal(de);
+    hashtableInitIterator(&iter, commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        struct redisCommand *cmd = entry;
         if (cmd->latency_histogram) {
             addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));
             fillCommandCDF(c, cmd->latency_histogram);
@@ -488,7 +487,7 @@ void latencyAllCommandsFillCDF(client *c, dict *commands, int *command_with_data
             latencyAllCommandsFillCDF(c, cmd->subcommands_dict, command_with_data);
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 }
 
 /* latencyCommand() helper to produce for a specific command set,
@@ -510,19 +509,19 @@ void latencySpecificCommandsFillCDF(client *c) {
         }
 
         if (cmd->subcommands_dict) {
-            dictEntry *de;
-            dictIterator di;
+            hashtableIterator iter;
+            void *entry;
 
-            dictInitSafeIterator(&di, cmd->subcommands_dict);
-            while ((de = dictNext(&di)) != NULL) {
-                struct redisCommand *sub = dictGetVal(de);
+            hashtableInitIterator(&iter, cmd->subcommands_dict, HASHTABLE_ITER_SAFE);
+            while (hashtableNext(&iter, &entry)) {
+                struct redisCommand *sub = entry;
                 if (sub->latency_histogram) {
                     addReplyBulkCBuffer(c, sub->fullname, sdslen(sub->fullname));
                     fillCommandCDF(c, sub->latency_histogram);
                     command_with_data++;
                 }
             }
-            dictResetIterator(&di);
+            hashtableCleanupIterator(&iter);
         }
     }
     setDeferredMapLen(c,replylen,command_with_data);

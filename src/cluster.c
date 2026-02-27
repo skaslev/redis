@@ -308,18 +308,16 @@ void restoreCommand(client *c) {
 
     /* Resolve the key's existence and its insertion link. On the common new-key
      * path dbAddInternal() below reuses the link instead of probing again. */
-    dictEntryLink link = NULL;
-    kvobj *oldval = lookupKeyWriteWithLink(c->db, key, &link);
+    hashtablePosition pos;
+    kvobj *oldval = lookupKeyWriteWithPosition(c->db, key, &pos);
     int oldtype = oldval ? oldval->type : -1;
+    int present = oldval != NULL;
 
-    /* Call dbDelete() only when a key is actually present:
-     *   oldval != NULL -> key exists.
-     *   link  == NULL  -> an expired key might still be physically present and 
-     *                     must be deleted. */
+    /* Call dbDelete() only when a key is actually present */
     int deleted = 0;
-    if (replace && (oldval || !link)) {
+    if (replace && present) {
         deleted = dbDelete(c->db,key);
-        link = NULL; /* dbDelete invalidated the link */
+        present = 0;
     }
 
     if (ttl && checkAlreadyExpired(ttl)) {
@@ -339,7 +337,7 @@ void restoreCommand(client *c) {
     }
 
     /* Create the key and set the TTL if any */
-    kvobj *kv = dbAddInternal(c->db, key, &obj, &link, &keymeta);
+    kvobj *kv = dbAddInternal(c->db, key, &obj, present ? &pos : NULL, &keymeta);
 
     /* Save type: kv may be reallocated by module callbacks during notifyKeyspaceEvent below. */
     int kvtype = kv->type;
@@ -1150,12 +1148,12 @@ void clusterCommand(client *c) {
         unsigned int numkeys = maxkeys > keys_in_slot ? keys_in_slot : maxkeys;
         addReplyArrayLen(c,numkeys);
         kvstoreDictIterator kvs_di;
-        dictEntry *de = NULL;
+        kvobj *kv = NULL;
         kvstoreInitDictIterator(&kvs_di, server.db->keys, slot);
         for (unsigned int i = 0; i < numkeys; i++) {
-            de = kvstoreDictIteratorNext(&kvs_di);
-            serverAssert(de != NULL);
-            sds sdskey = kvobjGetKey(dictGetKV(de));
+            kv = kvstoreDictIteratorNext(&kvs_di);
+            serverAssert(kv != NULL);
+            sds sdskey = kvobjGetKey(kv);
             addReplyBulkCBuffer(c, sdskey, sdslen(sdskey));
         }
         kvstoreResetDictIterator(&kvs_di);
@@ -1783,11 +1781,11 @@ unsigned int clusterDelKeysInSlot(unsigned int hashslot, int by_command) {
         return 0;
 
     kvstoreDictIterator kvs_di;
-    dictEntry *de = NULL;
+    kvobj *kv = NULL;
     kvstoreInitDictSafeIterator(&kvs_di, server.db->keys, (int) hashslot);
-    while((de = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
+    while((kv = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
         enterExecutionUnit(1, 0);
-        sds sdskey = kvobjGetKey(dictGetKV(de));
+        sds sdskey = kvobjGetKey(kv);
         robj *key = createStringObject(sdskey, sdslen(sdskey));
         dbDelete(&server.db[0], key);
 

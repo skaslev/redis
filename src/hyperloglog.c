@@ -1641,9 +1641,9 @@ invalid:
 /* PFADD var ele ele ele ... ele => :0 or :1 */
 void pfaddCommand(client *c) {
     uint64_t oldlen;
-    dictEntryLink link;
+    hashtablePosition pos;
     size_t oldsize = 0;
-    kvobj *kv = lookupKeyWriteWithLink(c->db,c->argv[1], &link);
+    kvobj *kv = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
 
     struct hllhdr *hdr;
     int updated = 0, j;
@@ -1653,11 +1653,11 @@ void pfaddCommand(client *c) {
          * hold our HLL data structure. sdsnewlen() when NULL is passed
          * is guaranteed to return bytes initialized to zero. */
         robj *o = createHLLObject();
-        kv = dbAddByLink(c->db, c->argv[1], &o, &link);
+        kv = dbAddByPosition(c->db, c->argv[1], &o, &pos);
         updated++;
     } else {
         if (isHLLObjectOrReply(c,kv) != C_OK) return;
-        kv = dbUnshareStringValue(c->db,c->argv[1],kv);
+        kv = dbUnshareStringValue(c->db,c->argv[1],kv,NULL);
     }
     oldlen = stringObjectLen(kv);
     if (server.memory_tracking_enabled)
@@ -1747,7 +1747,7 @@ void pfcountCommand(client *c) {
         addReply(c,shared.czero);
     } else {
         if (isHLLObjectOrReply(c,o) != C_OK) return;
-        o = dbUnshareStringValue(c->db,c->argv[1],o);
+        o = dbUnshareStringValue(c->db,c->argv[1],o,NULL);
 
         /* Check if the cached cardinality is valid. */
         hdr = o->ptr;
@@ -1819,19 +1819,19 @@ void pfmergeCommand(client *c) {
     }
 
     /* Create / unshare the destination key's value if needed. */
-    dictEntryLink link;
-    kvobj *kv = lookupKeyWriteWithLink(c->db,c->argv[1],&link);
+    hashtablePosition pos;
+    kvobj *kv = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
     if (kv == NULL) {
         /* Create the key with a string value of the exact length to
          * hold our HLL data structure. sdsnewlen() when NULL is passed
          * is guaranteed to return bytes initialized to zero. */
         robj *o = createHLLObject();
-        kv = dbAddByLink(c->db, c->argv[1], &o, &link);
+        kv = dbAddByPosition(c->db, c->argv[1], &o, &pos);
     } else {
         /* If key exists we are sure it's of the right type/size
          * since we checked when merging the different HLLs, so we
          * don't check again. */
-        kv = dbUnshareStringValue(c->db,c->argv[1],kv);
+        kv = dbUnshareStringValue(c->db,c->argv[1],kv,NULL);
     }
 
     uint64_t oldLen = stringObjectLen(kv);
@@ -2025,7 +2025,7 @@ void pfdebugCommand(client *c) {
         return;
     }
     if (isHLLObjectOrReply(c,o) != C_OK) return;
-    o = dbUnshareStringValue(c->db,c->argv[2],o);
+    o = dbUnshareStringValue(c->db,c->argv[2],o,NULL);
     hdr = o->ptr;
     if (server.memory_tracking_enabled)
         oldsize = kvobjAllocSize(o);

@@ -52,7 +52,7 @@ robj *setTypeCreate(sds value, size_t size_hint) {
     /* We may oversize the set by using the hint if the hint is not accurate,
      * but we will assume this is acceptable to maximize performance. */
     robj *o = createSetObject();
-    dictExpand(o->ptr, size_hint);
+    hashtableExpand(o->ptr, size_hint);
     return o;
 }
 
@@ -142,13 +142,14 @@ int setTypeAddAux(robj *set, char *str, size_t len, int64_t llval, int str_is_sd
     if (set->encoding == OBJ_ENCODING_HT) {
         /* Avoid duping the string if it is an sds string. */
         sds sdsval = str_is_sds ? (sds)str : sdsnewlen(str, len);
-        dict *ht = set->ptr;
-        dictEntryLink bucket, link = dictFindLink(ht, sdsval, &bucket);
-        if (link == NULL) {
+        hashtable *ht = set->ptr;
+        void *existing;
+        hashtablePosition pos;
+        if (hashtableFindPositionForInsert(ht, sdsval, &pos, &existing)) {
             /* Key doesn't already exist in the set. Add it but dup the key. */
             if (sdsval == str) sdsval = sdsdup(sdsval);
-            dictSetKeyAtLink(ht, sdsval, &bucket, 1);
-            *htGetMetadataSize(ht) += sdsAllocSize(sdsval);
+            hashtableInsertAtPosition(ht, sdsval, &pos);
+            *htGetAllocSizeMeta(ht) += sdsAllocSize(sdsval);
             return 1;
         } else if (sdsval != str) {
             /* String is already a member. Free our temporary sds copy. */
@@ -178,8 +179,8 @@ int setTypeAddAux(robj *set, char *str, size_t len, int64_t llval, int str_is_sd
                 /* Size limit is reached. Convert to hashtable and add. */
                 setTypeConvertAndExpand(set, OBJ_ENCODING_HT, lpLength(lp) + 1, 1);
                 sds newval = sdsnewlen(str,len);
-                serverAssert(dictAdd(set->ptr,newval,NULL) == DICT_OK);
-                *htGetMetadataSize(set->ptr) += sdsAllocSize(newval);
+                serverAssert(hashtableAdd(set->ptr, newval));
+                *htGetAllocSizeMeta(set->ptr) += sdsAllocSize(newval);
             }
             return 1;
         }
@@ -222,10 +223,10 @@ int setTypeAddAux(robj *set, char *str, size_t len, int64_t llval, int str_is_sd
                 setTypeConvertAndExpand(set, OBJ_ENCODING_HT,
                                         intsetLen(set->ptr) + 1, 1);
                 /* The set *was* an intset and this value is not integer
-                 * encodable, so dictAdd should always work. */
+                 * encodable, so hashtableAdd should always work. */
                 sds newval = sdsnewlen(str,len);
-                serverAssert(dictAdd(set->ptr,newval,NULL) == DICT_OK);
-                *htGetMetadataSize(set->ptr) += sdsAllocSize(newval);
+                serverAssert(hashtableAdd(set->ptr, newval));
+                *htGetAllocSizeMeta(set->ptr) += sdsAllocSize(newval);
                 return 1;
             }
         }
@@ -262,7 +263,7 @@ int setTypeRemoveAux(robj *setobj, char *str, size_t len, int64_t llval, int str
 
     if (setobj->encoding == OBJ_ENCODING_HT) {
         sds sdsval = str_is_sds ? (sds)str : sdsnewlen(str, len);
-        int deleted = (dictDelete(setobj->ptr, sdsval) == DICT_OK);
+        int deleted = hashtableDelete(setobj->ptr, sdsval);
         if (sdsval != str) sdsfree(sdsval); /* free temp copy */
         return deleted;
     } else if (setobj->encoding == OBJ_ENCODING_LISTPACK) {
@@ -318,10 +319,10 @@ int setTypeIsMemberAux(robj *set, char *str, size_t len, int64_t llval, int str_
         long long llval;
         return string2ll(str, len, &llval) && intsetFind(set->ptr, llval);
     } else if (set->encoding == OBJ_ENCODING_HT && str_is_sds) {
-        return dictFind(set->ptr, (sds)str) != NULL;
+        return hashtableFind(set->ptr, (sds)str, NULL);
     } else if (set->encoding == OBJ_ENCODING_HT) {
         sds sdsval = sdsnewlen(str, len);
-        int result = dictFind(set->ptr, sdsval) != NULL;
+        int result = hashtableFind(set->ptr, sdsval, NULL);
         sdsfree(sdsval);
         return result;
     } else {
@@ -333,7 +334,7 @@ void setTypeInitIterator(setTypeIterator *si, robj *subject) {
     si->subject = subject;
     si->encoding = subject->encoding;
     if (si->encoding == OBJ_ENCODING_HT) {
-        dictInitIterator(&si->di, subject->ptr);
+        hashtableInitIterator(&si->hi, subject->ptr, 0);
     } else if (si->encoding == OBJ_ENCODING_INTSET) {
         si->ii = 0;
     } else if (si->encoding == OBJ_ENCODING_LISTPACK) {
@@ -345,7 +346,7 @@ void setTypeInitIterator(setTypeIterator *si, robj *subject) {
 
 void setTypeResetIterator(setTypeIterator *si) {
     if (si->encoding == OBJ_ENCODING_HT)
-        dictResetIterator(&si->di);
+        hashtableCleanupIterator(&si->hi);
 }
 
 /* Move to the next entry in the set. Returns the object at the current
@@ -371,9 +372,9 @@ void setTypeResetIterator(setTypeIterator *si) {
  * When there are no more elements -1 is returned. */
 int setTypeNext(setTypeIterator *si, char **str, size_t *len, int64_t *llele) {
     if (si->encoding == OBJ_ENCODING_HT) {
-        dictEntry *de = dictNext(&si->di);
-        if (de == NULL) return -1;
-        *str = dictGetKey(de);
+        void *entry;
+        if (!hashtableNext(&si->hi, &entry)) return -1;
+        *str = (char *)entry;  /* entry is the sds string itself */
         *len = sdslen(*str);
         *llele = -123456789; /* Not needed. Defensive. */
     } else if (si->encoding == OBJ_ENCODING_INTSET) {
@@ -431,8 +432,9 @@ sds setTypeNextObject(setTypeIterator *si) {
  * be NULL. If str is set to NULL, the value is an integer stored in llele. */
 int setTypeRandomElement(robj *setobj, char **str, size_t *len, int64_t *llele) {
     if (setobj->encoding == OBJ_ENCODING_HT) {
-        dictEntry *de = dictGetFairRandomKey(setobj->ptr);
-        *str = dictGetKey(de);
+        void *entry;
+        hashtableFairRandomEntry(setobj->ptr, &entry);
+        *str = (char *)entry;  /* entry is the sds string itself */
         *len = sdslen(*str);
         *llele = -123456789; /* Not needed. Defensive. */
     } else if (setobj->encoding == OBJ_ENCODING_INTSET) {
@@ -482,7 +484,7 @@ robj *setTypePopRandom(robj *set) {
 
 unsigned long setTypeSize(const robj *subject) {
     if (subject->encoding == OBJ_ENCODING_HT) {
-        return dictSize((const dict*)subject->ptr);
+        return hashtableSize((const hashtable*)subject->ptr);
     } else if (subject->encoding == OBJ_ENCODING_INTSET) {
         return intsetLen((const intset*)subject->ptr);
     } else if (subject->encoding == OBJ_ENCODING_LISTPACK) {
@@ -496,8 +498,10 @@ size_t setTypeAllocSize(const robj *o) {
     serverAssertWithInfo(NULL,o,o->type == OBJ_SET);
     size_t size = 0;
     if (o->encoding == OBJ_ENCODING_HT) {
-        dict *d = o->ptr;
-        size += sizeof(dict) + dictMemUsage(d) + *htGetMetadataSize(d);
+        hashtable *ht = o->ptr;
+        /* hashtableMemUsage includes sizeof(hashtable) + metadata + buckets.
+         * We add the tracked sds allocation sizes stored in metadata. */
+        size += hashtableMemUsage(ht) + *htGetAllocSizeMeta(ht);
     } else if (o->encoding == OBJ_ENCODING_INTSET) {
         size = intsetAllocSize(o->ptr);
     } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
@@ -525,29 +529,29 @@ int setTypeConvertAndExpand(robj *setobj, int enc, unsigned long cap, int panic)
                              setobj->encoding != enc);
 
     if (enc == OBJ_ENCODING_HT) {
-        dict *d = dictCreate(&setDictType);
+        hashtable *ht = hashtableCreate(&setHashtableType);
         sds element;
 
-        /* Presize the dict to avoid rehashing */
+        /* Presize the hashtable to avoid rehashing */
         if (panic) {
-            dictExpand(d, cap);
-        } else if (dictTryExpand(d, cap) != DICT_OK) {
-            dictRelease(d);
+            hashtableExpand(ht, cap);
+        } else if (!hashtableTryExpand(ht, cap)) {
+            hashtableRelease(ht);
             return C_ERR;
         }
 
         /* To add the elements we extract integers and create redis objects */
-        size_t *alloc_size = htGetMetadataSize(d);
+        size_t *alloc_size = htGetAllocSizeMeta(ht);
         setTypeInitIterator(&si, setobj);
         while ((element = setTypeNextObject(&si)) != NULL) {
-            serverAssert(dictAdd(d,element,NULL) == DICT_OK);
+            serverAssert(hashtableAdd(ht, element));
             *alloc_size += sdsAllocSize(element);
         }
         setTypeResetIterator(&si);
 
         freeSetObject(setobj); /* frees the internals but not setobj itself */
         setobj->encoding = OBJ_ENCODING_HT;
-        setobj->ptr = d;
+        setobj->ptr = ht;
     } else if (enc == OBJ_ENCODING_LISTPACK) {
         /* Preallocate the minimum two bytes per element (enc/value + backlen) */
         size_t estcap = cap * 2;
@@ -606,8 +610,8 @@ robj *setTypeDup(robj *o) {
         set->encoding = OBJ_ENCODING_LISTPACK;
     } else if (o->encoding == OBJ_ENCODING_HT) {
         set = createSetObject();
-        dict *d = o->ptr;
-        dictExpand(set->ptr, dictSize(d));
+        hashtable *ht = o->ptr;
+        hashtableExpand(set->ptr, hashtableSize(ht));
         setTypeIterator si;
         setTypeInitIterator(&si, o);
         char *str;
@@ -626,15 +630,15 @@ robj *setTypeDup(robj *o) {
 void saddCommand(client *c) {
     kvobj *set;
     int j, added = 0;
-    dictEntryLink link;
+    hashtablePosition pos;
     size_t oldsize = 0;
 
-    set = lookupKeyWriteWithLink(c->db,c->argv[1], &link);
+    set = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
     if (checkType(c,set,OBJ_SET)) return;
     
     if (set == NULL) {
         robj *o = setTypeCreate(c->argv[2]->ptr, c->argc - 2);
-        set = dbAddByLink(c->db, c->argv[1], &o, &link);
+        set = dbAddByPosition(c->db, c->argv[1], &o, &pos);
     } else {
         if (server.memory_tracking_enabled)
             oldsize = kvobjAllocSize(set);
@@ -673,7 +677,7 @@ void sremCommand(client *c) {
         oldsize = kvobjAllocSize(set);
 
     if (set->encoding == OBJ_ENCODING_HT)
-        dictPauseAutoResize((dict*)set->ptr);
+        hashtablePauseAutoShrink((hashtable*)set->ptr);
     for (j = 2; j < c->argc; j++) {
         if (setTypeRemove(set,c->argv[j]->ptr)) {
             deleted++;
@@ -687,8 +691,8 @@ void sremCommand(client *c) {
         }
     }
     if (!keyremoved && set->encoding == OBJ_ENCODING_HT) {
-        dictResumeAutoResize((dict*)set->ptr);
-        dictShrinkIfNeeded((dict*)set->ptr);
+        hashtableResumeAutoShrink((hashtable*)set->ptr);
+        hashtableShrinkIfNeeded((hashtable*)set->ptr);
     }
     if (server.memory_tracking_enabled && !keyremoved)
         updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), set, oldsize, kvobjAllocSize(set));
@@ -1040,7 +1044,7 @@ void spopWithCountCommand(client *c) {
         updateKeysizesHist(c->db, OBJ_SET, size, size-count);
         if (server.memory_tracking_enabled)
             updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), set, oldsize, kvobjAllocSize(set));
-        dbReplaceValue(c->db, c->argv[1], &newset, 0);
+        dbReplaceValue(c->db, c->argv[1], &newset, 0, NULL);
         set = newset;
     }
 
@@ -1135,8 +1139,6 @@ void srandmemberWithCountCommand(client *c) {
     char *str;
     size_t len = 0;
     int64_t llele = 0;
-
-    dict *d;
 
     if (getRangeLongFromObjectOrReply(c,c->argv[2],-LONG_MAX,LONG_MAX,&l,NULL) != C_OK) return;
     if (l >= 0) {
@@ -1249,8 +1251,9 @@ void srandmemberWithCountCommand(client *c) {
         return;
     }
 
-    /* For CASE 3 and CASE 4 we need an auxiliary dictionary. */
-    d = dictCreate(&sdsReplyDictType);
+    /* For CASE 3 and CASE 4 we need an auxiliary hashtable.
+     * Use sdsHashtableTypeNoDup because addReplyBulkSds takes ownership of strings. */
+    hashtable *ht = hashtableCreate(&sdsHashtableTypeNoDup);
 
     /* CASE 3:
      * The number of elements inside the set is not greater than
@@ -1264,29 +1267,29 @@ void srandmemberWithCountCommand(client *c) {
     if (count*SRANDMEMBER_SUB_STRATEGY_MUL > size) {
         setTypeIterator si;
 
-        /* Add all the elements into the temporary dictionary. */
+        /* Add all the elements into the temporary hashtable. */
         setTypeInitIterator(&si, set);
-        dictExpand(d, size);
+        hashtableExpand(ht, size);
         while (setTypeNext(&si, &str, &len, &llele) != -1) {
-            int retval = DICT_ERR;
+            int retval;
 
             if (str == NULL) {
-                retval = dictAdd(d,sdsfromlonglong(llele),NULL);
+                retval = hashtableAdd(ht, sdsfromlonglong(llele));
             } else {
-                retval = dictAdd(d, sdsnewlen(str, len), NULL);
+                retval = hashtableAdd(ht, sdsnewlen(str, len));
             }
-            serverAssert(retval == DICT_OK);
+            serverAssert(retval);
         }
         setTypeResetIterator(&si);
-        serverAssert(dictSize(d) == size);
+        serverAssert(hashtableSize(ht) == size);
 
         /* Remove random elements to reach the right count. */
         while (size > count) {
-            dictEntry *de;
-            de = dictGetFairRandomKey(d);
-            dictUnlink(d,dictGetKey(de));
-            sdsfree(dictGetKey(de));
-            dictFreeUnlinkedEntry(d,de);
+            void *entry;
+            hashtableFairRandomEntry(ht, &entry);
+            sds ele = entry;
+            hashtableDelete(ht, ele);
+            sdsfree(ele);  /* Free the sds since hashtable type has no destructor */
             size--;
         }
     }
@@ -1299,7 +1302,7 @@ void srandmemberWithCountCommand(client *c) {
         unsigned long added = 0;
         sds sdsele;
 
-        dictExpand(d, count);
+        hashtableExpand(ht, count);
         while (added < count) {
             setTypeRandomElement(set, &str, &len, &llele);
             if (str == NULL) {
@@ -1307,10 +1310,10 @@ void srandmemberWithCountCommand(client *c) {
             } else {
                 sdsele = sdsnewlen(str, len);
             }
-            /* Try to add the object to the dictionary. If it already exists
+            /* Try to add the object to the hashtable. If it already exists
              * free it, otherwise increment the number of objects we have
-             * in the result dictionary. */
-            if (dictAdd(d,sdsele,NULL) == DICT_OK)
+             * in the result hashtable. */
+            if (hashtableAdd(ht, sdsele))
                 added++;
             else
                 sdsfree(sdsele);
@@ -1319,15 +1322,15 @@ void srandmemberWithCountCommand(client *c) {
 
     /* CASE 3 & 4: send the result to the user. */
     {
-        dictIterator di;
-        dictEntry *de;
+        hashtableIterator hi;
+        void *entry;
 
         addReplyArrayLen(c,count);
-        dictInitIterator(&di, d);
-        while((de = dictNext(&di)) != NULL)
-            addReplyBulkSds(c,dictGetKey(de));
-        dictResetIterator(&di);
-        dictRelease(d);
+        hashtableInitIterator(&hi, ht, 0);
+        while (hashtableNext(&hi, &entry))
+            addReplyBulkSds(c, entry);
+        hashtableCleanupIterator(&hi);
+        hashtableRelease(ht);
     }
 }
 

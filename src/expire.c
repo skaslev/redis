@@ -111,9 +111,8 @@ typedef struct {
     int ttl_samples; /* num keys with ttl not yet expired */
 } expireScanData;
 
-void expireScanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
-    UNUSED(plink);
-    kvobj *kv = dictGetKV(de);
+void expireScanCallback(void *privdata, void *entry) {
+    kvobj *kv = entry;
     expireScanData *data = privdata;
     long long ttl  = kvobjGetExpire(kv) - data->now;
     if (activeExpireCycleTryExpire(data->db, kv, data->now)) {
@@ -127,13 +126,13 @@ void expireScanCallback(void *privdata, const dictEntry *de, dictEntryLink plink
     data->sampled++;
 }
 
-static inline int expirySamplingShouldSkipDict(dict *d, int didx) {
-    long long numkeys = dictSize(d);
-    unsigned long buckets = dictBuckets(d);
-    /* When there are less than 1% filled buckets, sampling the key
+static inline int expirySamplingShouldSkipDict(hashtable *ht, int didx) {
+    size_t numkeys = hashtableSize(ht);
+    size_t capacity = hashtableBuckets(ht) * hashtableEntriesPerBucket();
+    /* When there are less than 1% filled slots, sampling the key
      * space is expensive, so stop here waiting for better times...
-     * The dictionary will be resized asap. */
-    if (buckets > DICT_HT_INITIAL_SIZE && (numkeys * 100/buckets < 1)) {
+     * The hashtable will be resized asap. */
+    if (capacity > hashtableEntriesPerBucket() && (numkeys * 100 < capacity)) {
         return 1;
     }
 

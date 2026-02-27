@@ -129,8 +129,8 @@ void gcraCommand(client *c) {
     ustime_t now = commandTimeSnapshot() * 1000;
 
     long long tat_us, new_tat_us;
-    dictEntryLink link;
-    kvobj *kv = lookupKeyWriteWithLink(c->db, key, &link);
+    hashtablePosition pos;
+    kvobj *kv = lookupKeyWriteWithPosition(c->db, key, &pos);
     if (checkType(c, kv, OBJ_GCRA)) {
         return;
     }
@@ -199,7 +199,7 @@ void gcraCommand(client *c) {
         limited = 0;
         ttl_us = new_tat_us - now;
         robj *tatobj = createGCRAObject(new_tat_us);
-        setKeyByLink(c, c->db, key, &tatobj, kv ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST, &link);
+        void **kvref = setKeyByPosition(c, c->db, key, &tatobj, kv ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST, &pos, kv);
         notifyKeyspaceEvent(NOTIFY_RATE_LIMIT,"gcra",key,c->db->id);
 
         /* The key implicitly sets its own expiry time (which is basically the
@@ -211,7 +211,7 @@ void gcraCommand(client *c) {
          * decision to keep the implicit expiraty.
          * NOTE: idea is same as in redis-cell. */
         long long when = new_tat_us / 1000;
-        kv = setExpireByLink(c, c->db, key->ptr, when, link);
+        kv = setExpireByRef(c, c->db, key, when, tatobj, kvref);
         notifyKeyspaceEvent(NOTIFY_GENERIC,"expire",key,c->db->id);
 
         /* Replicating the command directly would mess up TaT as we use
@@ -250,8 +250,8 @@ void gcraSetValueCommand(client *c) {
     robj *tat = c->argv[2];
     long long when;
 
-    dictEntryLink link;
-    kvobj *kv = lookupKeyWriteWithLink(c->db, key, &link);
+    hashtablePosition pos;
+    kvobj *kv = lookupKeyWriteWithPosition(c->db, key, &pos);
     if (checkType(c, kv, OBJ_GCRA)) return;
 
     if (getLongLongFromObjectOrReply(c, tat, &when, "Invalid TaT value") == C_ERR) {
@@ -263,12 +263,12 @@ void gcraSetValueCommand(client *c) {
     }
 
     robj *tatobj = createGCRAObject(when);
-    setKeyByLink(c, c->db, key, &tatobj, kv ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST, &link);
+    void **kvref = setKeyByPosition(c, c->db, key, &tatobj, kv ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST, &pos, kv);
     notifyKeyspaceEvent(NOTIFY_RATE_LIMIT,"gcra",key,c->db->id);
 
     /* Just like the base GCRA command we set the expire time of the key implicitly. */
     long long when_ms = when / 1000;
-    kv = setExpireByLink(c, c->db, key->ptr, when_ms, link);
+    kv = setExpireByRef(c, c->db, key, when_ms, tatobj, kvref);
     notifyKeyspaceEvent(NOTIFY_GENERIC,"expire",key,c->db->id);
     server.dirty++;
 

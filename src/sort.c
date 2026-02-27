@@ -351,7 +351,7 @@ void sortCommandGeneric(client *c, int readonly) {
     switch(sortval->type) {
     case OBJ_LIST: vectorlen = listTypeLength(sortval); break;
     case OBJ_SET: vectorlen =  setTypeSize(sortval); break;
-    case OBJ_ZSET: vectorlen = dictSize(((zset*)sortval->ptr)->dict); break;
+    case OBJ_ZSET: vectorlen = hashtableSize(((zset*)sortval->ptr)->ht); break;
     default: vectorlen = 0; serverPanic("Bad SORT type"); /* Avoid GCC warning */
     }
 
@@ -454,7 +454,7 @@ void sortCommandGeneric(client *c, int readonly) {
 
         /* Check if starting point is trivial, before doing log(N) lookup. */
         if (desc) {
-            long zsetlen = dictSize(((zset*)sortval->ptr)->dict);
+            long zsetlen = hashtableSize(((zset*)sortval->ptr)->ht);
 
             ln = zsl->tail;
             if (start > 0)
@@ -478,22 +478,21 @@ void sortCommandGeneric(client *c, int readonly) {
         end -= start;
         start = 0;
     } else if (sortval->type == OBJ_ZSET) {
-        dict *set = ((zset*)sortval->ptr)->dict;
-        dictIterator di;
-        dictEntry *setele;
+        hashtable *ht = ((zset*)sortval->ptr)->ht;
+        hashtableIterator hi;
+        void *entry;
         sds sdsele;
 
         if (server.memory_tracking_enabled)
             oldsize = kvobjAllocSize(sortval);
-        dictInitIterator(&di, set);
-        while((setele = dictNext(&di)) != NULL) {
-            sdsele = zslGetNodeElement(dictGetKey(setele));
+        hashtableInitIterator(&hi, ht, 0);
+        while (hashtableNext(&hi, &entry)) {
+            sdsele = zslGetNodeElement(entry);
             vector[j].obj = createStringObject(sdsele,sdslen(sdsele));
             vector[j].u.score = 0;
             vector[j].u.cmpobj = NULL;
             j++;
         }
-        dictResetIterator(&di);
         if (server.memory_tracking_enabled)
             updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), sortval, oldsize, kvobjAllocSize(sortval));
     } else {
