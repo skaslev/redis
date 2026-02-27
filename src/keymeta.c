@@ -821,25 +821,22 @@ kvobj *keyMetaSetMetadata(redisDb *db, kvobj *kv, KeyMetaClassId id, uint64_t me
 
     /* Preserve existing expire value (and whether an expires entry exists). */
     long long old_expire_val = kvobjGetExpire(kv);
-    
-    /* We'll need the key's link in the main dictionary to update pointer if reallocated. */
-    dictEntryLink keyLink = kvstoreDictFindLink(db->keys, slot, key, NULL);
-    serverAssert(keyLink != NULL);
 
-    /* If the key has an actual TTL (expire != -1), also preserve the expires dict link. */
-    dictEntryLink exLink = NULL;
-    if (old_expire_val != -1) {
-        exLink = kvstoreDictFindLink(db->expires, slot, key, NULL);
-        serverAssert(exLink != NULL);
-    }
+    /* Get the old kv pointer for replacement */
+    kvobj *old_kv = kv;
 
-    /* Reallocate kv with the new metadata bit enabled. kvobjSet may return a new 
+    /* Reallocate kv with the new metadata bit enabled. kvobjSet may return a new
      * ptr. Takes care to transition existing metadata as needed. */
     size_t oldsize = 0;
     if (server.memory_tracking_enabled)
         oldsize = kvobjAllocSize(kv);
     kv = kvobjSet(key, kv, kv->metabits | (1u << id));
-    kvstoreDictSetAtLink(db->keys, slot, kv, &keyLink, 0);
+
+    /* If reallocated, update in db->keys */
+    if (kv != old_kv) {
+        hashtable *ht = kvstoreGetDict(db->keys, slot);
+        hashtableReplaceReallocatedEntry(ht, old_kv, kv);
+    }
     if (server.memory_tracking_enabled)
         updateSlotAllocSize(db, slot, kv, oldsize, kvobjAllocSize(kv));
 
@@ -847,9 +844,10 @@ kvobj *keyMetaSetMetadata(redisDb *db, kvobj *kv, KeyMetaClassId id, uint64_t me
     *kvobjMetaRef(kv, id) = metadata;
     
     /* If there was an expires entry (expire != -1), update its kv pointer. */
-    if (exLink) {
+    if (old_expire_val != -1 && kv != old_kv) {
         ((uint64_t *)kv)[-1] = old_expire_val; /* expiry must be first meta */
-        kvstoreDictSetAtLink(db->expires, slot, kv, &exLink, 0);
+        hashtable *htExp = kvstoreGetDict(db->expires, slot);
+        hashtableReplaceReallocatedEntry(htExp, old_kv, kv);
     }
 
     /* Re-register in HFE if needed. */

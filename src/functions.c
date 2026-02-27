@@ -25,7 +25,6 @@ static size_t engine_cache_memory = 0;
 static void engineFunctionDispose(dict *d, void *obj);
 static void engineStatsDispose(dict *d, void *obj);
 static void engineLibraryDispose(dict *d, void *obj);
-static void engineDispose(dict *d, void *obj);
 static int functionsVerifyName(sds name);
 
 typedef struct functionsLibEngineStats {
@@ -45,16 +44,6 @@ typedef struct functionsLibMataData {
     sds name;
     sds code;
 } functionsLibMataData;
-
-dictType engineDictType = {
-        dictSdsCaseHash,       /* hash function */
-        dictSdsDup,            /* key dup */
-        NULL,                  /* val dup */
-        dictSdsKeyCaseCompare, /* key compare */
-        dictSdsDestructor,     /* key destructor */
-        engineDispose,         /* val destructor */
-        NULL                   /* allow to expand */
-};
 
 dictType functionDictType = {
         dictSdsCaseHash,      /* hash function */
@@ -96,8 +85,35 @@ dictType librariesDictType = {
         NULL                  /* allow to expand */
 };
 
-/* Dictionary of engines */
-static dict *engines = NULL;
+/* Hashtable type for engines - entries are engineInfo* */
+static const void *htEngineGetName(const void *entry) {
+    const engineInfo *ei = entry;
+    return ei->name;
+}
+
+static void htEngineDispose(hashtable *ht, void *entry) {
+    UNUSED(ht);
+    engineInfo *ei = entry;
+    freeClient(ei->c);
+    sdsfree(ei->name);
+    ei->engine->free_ctx(ei->engine->engine_ctx);
+    zfree(ei->engine);
+    zfree(ei);
+}
+
+static int htSdsCaseKeyCompare(const void *key1, const void *key2) {
+    return strcasecmp((const char *)key1, (const char *)key2);
+}
+
+static hashtableType enginesHashtableType = {
+    .entryGetKey = htEngineGetName,
+    .hashFunction = dictSdsCaseHash,
+    .keyCompare = htSdsCaseKeyCompare,
+    .entryDestructor = htEngineDispose,
+};
+
+/* Hashtable of engines */
+static hashtable *engines = NULL;
 
 /* Libraries Ctx. */
 static functionsLibCtx *curr_functions_lib_ctx = NULL;
@@ -154,16 +170,6 @@ static void engineLibraryDispose(dict *d, void *obj) {
     engineLibraryFree(obj);
 }
 
-static void engineDispose(dict *d, void *obj) {
-    UNUSED(d);
-    engineInfo *ei = obj;
-    freeClient(ei->c);
-    sdsfree(ei->name);
-    ei->engine->free_ctx(ei->engine->engine_ctx);
-    zfree(ei->engine);
-    zfree(ei);
-}
-
 /* Clear all the functions from the given library ctx */
 void functionsLibCtxClear(functionsLibCtx *lib_ctx) {
     dictEmpty(lib_ctx->functions, NULL);
@@ -183,11 +189,11 @@ void functionsLibCtxClear(functionsLibCtx *lib_ctx) {
 void functionsLibCtxClearCurrent(int async) {
     if (async) {
         functionsLibCtx *old_l_ctx = curr_functions_lib_ctx;
-        dict *old_engines = engines;
+        hashtable *old_engines = engines;
         freeFunctionsAsync(old_l_ctx, old_engines);
     } else {
         functionsLibCtxFree(curr_functions_lib_ctx);
-        dictRelease(engines);
+        hashtableRelease(engines);
     }
     functionsInit();
 }
@@ -219,15 +225,15 @@ functionsLibCtx* functionsLibCtxCreate(void) {
     ret->libraries = dictCreate(&librariesDictType);
     ret->functions = dictCreate(&functionDictType);
     ret->engines_stats = dictCreate(&engineStatsDictType);
-    dictIterator iter;
-    dictEntry *entry = NULL;
-    dictInitIterator(&iter, engines);
-    while ((entry = dictNext(&iter))) {
-        engineInfo *ei = dictGetVal(entry);
+    hashtableIterator iter;
+    void *entry = NULL;
+    hashtableInitIterator(&iter, engines, 0);
+    while (hashtableNext(&iter, &entry)) {
+        engineInfo *ei = entry;
         functionsLibEngineStats *stats = zcalloc(sizeof(*stats));
         dictAdd(ret->engines_stats, ei->name, stats);
     }
-    dictResetIterator(&iter);
+    hashtableCleanupIterator(&iter);
     ret->cache_memory = 0;
     return ret;
 }
@@ -406,7 +412,7 @@ done:
  * - engine_ctx - the engine ctx that should be used by Redis to interact with the engine */
 int functionsRegisterEngine(const char *engine_name, engine *engine) {
     sds engine_name_sds = sdsnew(engine_name);
-    if (dictFetchValue(engines, engine_name_sds)) {
+    if (hashtableFind(engines, engine_name_sds, NULL)) {
         serverLog(LL_WARNING, "Same engine was registered twice");
         sdsfree(engine_name_sds);
         return C_ERR;
@@ -417,7 +423,7 @@ int functionsRegisterEngine(const char *engine_name, engine *engine) {
     engineInfo *ei = zmalloc(sizeof(*ei));
     *ei = (engineInfo ) { .name = engine_name_sds, .engine = engine, .c = c,};
 
-    dictAdd(engines, engine_name_sds, ei);
+    hashtableAdd(engines, ei);
 
     engine_cache_memory += zmalloc_size(ei) + sdsZmallocSize(ei->name) +
             zmalloc_size(engine) +
@@ -455,12 +461,12 @@ void functionStatsCommand(client *c) {
     }
 
     addReplyBulkCString(c, "engines");
-    addReplyMapLen(c, dictSize(engines));
-    dictIterator iter;
-    dictEntry *entry = NULL;
-    dictInitIterator(&iter, engines);
-    while ((entry = dictNext(&iter))) {
-        engineInfo *ei = dictGetVal(entry);
+    addReplyMapLen(c, hashtableSize(engines));
+    hashtableIterator iter;
+    void *entry = NULL;
+    hashtableInitIterator(&iter, engines, 0);
+    while (hashtableNext(&iter, &entry)) {
+        engineInfo *ei = entry;
         addReplyBulkCString(c, ei->name);
         addReplyMapLen(c, 2);
         functionsLibEngineStats *e_stats = dictFetchValue(curr_functions_lib_ctx->engines_stats, ei->name);
@@ -469,7 +475,7 @@ void functionStatsCommand(client *c) {
         addReplyBulkCString(c, "functions_count");
         addReplyLongLong(c, e_stats->n_functions);
     }
-    dictResetIterator(&iter);
+    hashtableCleanupIterator(&iter);
 }
 
 static void functionListReplyFlags(client *c, functionInfo *fi) {
@@ -976,7 +982,8 @@ sds functionsCreateWithLibraryCtx(sds code, int replace, sds* err, functionsLibC
         goto error;
     }
 
-    engineInfo *ei = dictFetchValue(engines, md.engine);
+    void *found;
+    engineInfo *ei = hashtableFind(engines, md.engine, &found) ? found : NULL;
     if (!ei) {
         *err = sdscatfmt(sdsempty(), "Engine '%S' not found", md.engine);
         goto error;
@@ -1079,24 +1086,24 @@ void functionLoadCommand(client *c) {
 
 /* Return memory usage of all the engines combine */
 unsigned long functionsMemoryVM(void) {
-    dictIterator iter;
-    dictEntry *entry = NULL;
+    hashtableIterator iter;
+    void *entry = NULL;
     size_t engines_memory = 0;
 
-    dictInitIterator(&iter, engines);
-    while ((entry = dictNext(&iter))) {
-        engineInfo *ei = dictGetVal(entry);
+    hashtableInitIterator(&iter, engines, 0);
+    while (hashtableNext(&iter, &entry)) {
+        engineInfo *ei = entry;
         engine *engine = ei->engine;
         engines_memory += engine->get_used_memory(engine->engine_ctx);
     }
-    dictResetIterator(&iter);
+    hashtableCleanupIterator(&iter);
 
     return engines_memory;
 }
 
 /* Return memory overhead of all the engines combine */
 unsigned long functionsMemoryEngine(void) {
-    size_t memory_overhead = dictMemUsage(engines);
+    size_t memory_overhead = hashtableMemUsage(engines);
     memory_overhead += dictMemUsage(curr_functions_lib_ctx->functions);
     memory_overhead += sizeof(functionsLibCtx);
     memory_overhead += curr_functions_lib_ctx->cache_memory;
@@ -1125,7 +1132,7 @@ size_t functionsLibCtxFunctionsLen(functionsLibCtx *functions_ctx) {
 /* Initialize engine data structures.
  * Should be called once on server initialization */
 int functionsInit(void) {
-    engines = dictCreate(&engineDictType);
+    engines = hashtableCreate(&enginesHashtableType);
 
     if (luaEngineInitEngine() != C_OK) {
         return C_ERR;

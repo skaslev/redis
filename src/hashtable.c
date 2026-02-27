@@ -417,7 +417,7 @@ static bucket *findBucketForInsert(hashtable *ht, uint64_t hash, int *pos_in_buc
 static bool abortShrinkIfNeeded(hashtable *ht);
 
 static inline void freeEntry(hashtable *ht, void *entry) {
-    if (ht->type->entryDestructor) ht->type->entryDestructor(entry);
+    if (ht->type->entryDestructor) ht->type->entryDestructor(ht, entry);
 }
 
 static inline int compareKeys(hashtable *ht, const void *key1, const void *key2) {
@@ -1292,7 +1292,7 @@ void hashtableEmpty(hashtable *ht, void(callback)(hashtable *)) {
                     if (ht->type->entryDestructor != NULL && b->presence != 0) {
                         for (int pos = 0; pos < ENTRIES_PER_BUCKET; pos++) {
                             if (isPositionFilled(b, pos)) {
-                                ht->type->entryDestructor(b->entries[pos]);
+                                ht->type->entryDestructor(ht, b->entries[pos]);
                             }
                         }
                     }
@@ -1348,6 +1348,12 @@ hashtableType *hashtableSetType(hashtable *ht, hashtableType *type) {
 /* Returns a pointer to the table's metadata (userdata) section. */
 void *hashtableMetadata(hashtable *ht) {
     return &ht->metadata;
+}
+
+/* Returns the size of the hashtable struct, excluding metadata and bucket
+ * tables. Useful for external accounting of per-hashtable overhead. */
+size_t hashtableHeaderSize(void) {
+    return sizeof(hashtable);
 }
 
 /* Returns the number of entries stored. */
@@ -1504,6 +1510,10 @@ bool hashtableShrinkIfNeeded(hashtable *ht) {
     if (hashtableIsRehashing(ht) || ht->pause_auto_shrink) {
         return false;
     }
+    /* Don't shrink at all if resize policy is FORBID. */
+    if (resize_policy == HASHTABLE_RESIZE_FORBID) {
+        return false;
+    }
     size_t current_capacity = numBuckets(ht->bucket_exp[0]) * ENTRIES_PER_BUCKET;
     unsigned min_fill_percent = resize_policy == HASHTABLE_RESIZE_ALLOW ? MIN_FILL_PERCENT_SOFT : MIN_FILL_PERCENT_HARD;
     if (ht->used[0] * 100 > current_capacity * min_fill_percent) {
@@ -1592,6 +1602,7 @@ hashtable *hashtableDefragTables(hashtable *ht, void *(*defragfn)(void *)) {
 /* Used for releasing memory to OS to avoid unnecessary CoW. Called when we've
  * forked and memory won't be used again. See zmadvise_dontneed() */
 void dismissHashtable(hashtable *ht) {
+    if (!ht) return;
     for (int i = 0; i < 2; i++) {
         zmadvise_dontneed(ht->tables[i]);
     }
@@ -1679,9 +1690,14 @@ bool hashtableFindPositionForInsert(hashtable *ht, void *key, hashtablePosition 
     position *p = positionFromOpaque(pos);
     uint64_t hash = hashKey(ht, key);
     int pos_in_bucket, table_index;
-    bucket *b = findBucket(ht, hash, key, &pos_in_bucket, NULL);
+    bucket *b = findBucket(ht, hash, key, &pos_in_bucket, &table_index);
     if (b != NULL) {
         if (existing) *existing = b->entries[pos_in_bucket];
+        /* Populate position so hashtableGetRefAtPosition() works for
+         * the found entry too, not only for the insert path. */
+        p->bucket = b;
+        p->pos_in_bucket = pos_in_bucket;
+        p->table_index = table_index;
         return false;
     }
     hashtableExpandIfNeeded(ht);
@@ -1716,6 +1732,19 @@ void hashtableInsertAtPosition(hashtable *ht, void *entry, hashtablePosition *po
     b->entries[pos_in_bucket] = entry;
     ht->used[table_index]++;
     /* Hash bits are already set by hashtableFindPositionForInsert. */
+}
+
+/* Returns a pointer to where an entry is stored in the hashtable, using a
+ * position previously written by hashtableInsertAtPosition or
+ * hashtableFindPositionForInsert (when the key was found). This allows the
+ * caller to replace the entry in-place without an extra lookup.
+ *
+ * The returned pointer is subject to the same invalidation rules as
+ * hashtableFindRef: any hashtable mutation (including implicit rehashing
+ * triggered by reads) may move entries and invalidate it. */
+void **hashtableGetRefAtPosition(hashtablePosition *pos) {
+    position *p = positionFromOpaque(pos);
+    return &p->bucket->entries[p->pos_in_bucket];
 }
 
 /* Removes the entry with the matching key and returns it. The entry
@@ -2267,6 +2296,10 @@ bool hashtableNext(hashtableIterator *iterator, void **elemptr) {
     iter *iter = iteratorFromOpaque(iterator);
     /* Check if iterator has been invalidated */
     if (iter->hashtable == NULL) return false;
+    /* If the iterator already finished, return false consistently. */
+    if (iter->index >= 0 && (size_t)iter->index >= numBuckets(iter->hashtable->bucket_exp[iter->table])) {
+        return false;
+    }
 
     while (1) {
         if (iter->index == -1 && iter->table == 0) {

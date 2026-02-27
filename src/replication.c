@@ -2143,8 +2143,8 @@ void replicationSendNewlineToMaster(void) {
 /* Callback used by emptyData() while flushing away old data to load
  * the new dataset received by the master or to clear partial db if loading
  * fails. */
-void replicationEmptyDbCallback(dict *d) {
-    UNUSED(d);
+void replicationEmptyDbCallback(hashtable *ht) {
+    UNUSED(ht);
     if (server.repl_state == REPL_STATE_TRANSFER)
         replicationSendNewlineToMaster();
 

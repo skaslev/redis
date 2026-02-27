@@ -823,7 +823,7 @@ void georadiusGeneric(client *c, int srcKeyIndex, int flags) {
             if (maxelelen < elelen) maxelelen = elelen;
             totelelen += elelen;
             znode = zslInsert(zs->zsl,score,gp->member);
-            serverAssert(dictAdd(zs->dict, znode, NULL) == DICT_OK);
+            serverAssert(hashtableAdd(zs->ht, znode));
             sdsfree(gp->member); /* zslInsert copies the sds, so free the original */
             gp->member = NULL;
         }

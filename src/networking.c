@@ -220,9 +220,9 @@ client *createClient(connection *conn) {
     initClientBlockingState(c);
     c->woff = 0;
     c->watched_keys = listCreate();
-    c->pubsub_channels = dictCreate(&objectKeyPointerValueDictType);
-    c->pubsub_patterns = dictCreate(&objectKeyPointerValueDictType);
-    c->pubsubshard_channels = dictCreate(&objectKeyPointerValueDictType);
+    c->pubsub_channels = hashtableCreate(&clientPubSubChannelsType);
+    c->pubsub_patterns = hashtableCreate(&clientPubSubChannelsType);
+    c->pubsubshard_channels = hashtableCreate(&clientPubSubChannelsType);
     c->peerid = NULL;
     c->sockname = NULL;
     c->client_list_node = NULL;
@@ -2247,9 +2247,9 @@ void freeClient(client *c) {
     pubsubUnsubscribeShardAllChannels(c, 0);
     pubsubUnsubscribeAllPatterns(c,0);
     unmarkClientAsPubSub(c);
-    dictRelease(c->pubsub_channels);
-    dictRelease(c->pubsub_patterns);
-    dictRelease(c->pubsubshard_channels);
+    hashtableRelease(c->pubsub_channels);
+    hashtableRelease(c->pubsub_patterns);
+    hashtableRelease(c->pubsubshard_channels);
 
     /* Free data structures. */
     releaseAllBufReferences(c); /* Release all references to string objects in encoded buffers before freeing */
@@ -4121,9 +4121,9 @@ sds catClientInfoString(sds s, client *client) {
         " idle=%I", (long long)(server.unixtime - client->lastinteraction),
         " flags=%s", flags,
         " db=%i", client->db->id,
-        " sub=%i", (int) dictSize(client->pubsub_channels),
-        " psub=%i", (int) dictSize(client->pubsub_patterns),
-        " ssub=%i", (int) dictSize(client->pubsubshard_channels),
+        " sub=%i", (int) hashtableSize(client->pubsub_channels),
+        " psub=%i", (int) hashtableSize(client->pubsub_patterns),
+        " ssub=%i", (int) hashtableSize(client->pubsubshard_channels),
         " multi=%i", (client->flags & CLIENT_MULTI) ? client->mstate.count : -1,
         " watch=%i", (int) listLength(client->watched_keys),
         " qbuf=%U", client->querybuf ? (unsigned long long) sdslen(client->querybuf) : 0,

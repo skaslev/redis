@@ -25,13 +25,10 @@ typedef struct idmpEntry {
 
 /* IDMP Producer structure for per-producer deduplication tracking */
 typedef struct idmpProducer {
-    dict *idmp_dict;       /* IDMP IID tracking tree. */
+    hashtable *idmp_ht;    /* IDMP IID tracking hashtable. */
     idmpEntry *idmp_head;  /* Head of the IDMP entries linked list. */
     idmpEntry *idmp_tail;  /* Tail of the IDMP entries linked list. */
 } idmpProducer;
-
-/* Dictionary type for IDMP entries - uses IID as key */
-extern dictType idmpDictType;
 
 typedef struct stream {
     rax *rax;               /* The radix tree holding the stream. */

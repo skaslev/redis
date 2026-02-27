@@ -483,11 +483,11 @@ void listTypeDelRange(robj *subject, long start, long count) {
  * 'xx': push if key exists. */
 void pushGenericCommand(client *c, int where, int xx) {
     unsigned long llen;
-    dictEntryLink link;
+    hashtablePosition pos;
     int j;
     size_t oldsize = 0;
 
-    kvobj *lobj = lookupKeyWriteWithLink(c->db, c->argv[1], &link);
+    kvobj *lobj = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
     if (checkType(c,lobj,OBJ_LIST)) return;
     if (!lobj) {
         if (xx) {
@@ -496,7 +496,7 @@ void pushGenericCommand(client *c, int where, int xx) {
         }
 
         lobj = createListListpackObject();
-        dbAddByLink(c->db, c->argv[1], &lobj, &link);
+        dbAddByPosition(c->db, c->argv[1], &lobj, &pos);
     }
 
     if (server.memory_tracking_enabled)

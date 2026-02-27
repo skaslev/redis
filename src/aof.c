@@ -2044,12 +2044,12 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
         }
     } else if (o->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = o->ptr;
-        dictIterator di;
-        dictEntry *de;
+        hashtableIterator hi;
+        void *entry;
 
-        dictInitIterator(&di, zs->dict);
-        while((de = dictNext(&di)) != NULL) {
-            zskiplistNode *znode = dictGetKey(de);
+        hashtableInitIterator(&hi, zs->ht, 0);
+        while (hashtableNext(&hi, &entry)) {
+            zskiplistNode *znode = entry;
             sds ele = zslGetNodeElement(znode);
             double score = znode->score;
 
@@ -2061,20 +2061,20 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
                     !rioWriteBulkString(r,"ZADD",4) ||
                     !rioWriteBulkObject(r,key)) 
                 {
-                    dictResetIterator(&di);
+                    hashtableCleanupIterator(&hi);
                     return 0;
                 }
             }
             if (!rioWriteBulkDouble(r,score) ||
                 !rioWriteBulkString(r,ele,sdslen(ele)))
             {
-                dictResetIterator(&di);
+                hashtableCleanupIterator(&hi);
                 return 0;
             }
             if (++count == AOF_REWRITE_ITEMS_PER_CMD) count = 0;
             items--;
         }
-        dictResetIterator(&di);
+        hashtableCleanupIterator(&hi);
     } else {
         serverPanic("Unknown sorted zset encoding");
     }
@@ -2681,7 +2681,6 @@ int rewriteObject(rio *r, robj *key, robj *o, int dbid, long long expiretime) {
 }
 
 int rewriteAppendOnlyFileRio(rio *aof) {
-    dictEntry *de;
     int j;
     long key_count = 0;
     long long updated_time = 0;
@@ -2709,7 +2708,8 @@ int rewriteAppendOnlyFileRio(rio *aof) {
         kvstoreIteratorInit(&kvs_it, db->keys);
         int last_slot = -1;
         /* Iterate this DB writing every entry */
-        while((de = kvstoreIteratorNext(&kvs_it)) != NULL) {
+        kvobj *o;
+        while((o = kvstoreIteratorNext(&kvs_it)) != NULL) {
             long long expiretime;
             size_t aof_bytes_before_key = aof->processed_bytes;
             int curr_slot = kvstoreIteratorGetCurrentDictIndex(&kvs_it);
@@ -2718,13 +2718,10 @@ int rewriteAppendOnlyFileRio(rio *aof) {
              * which won't be accessed again, to avoid CoW. */
             if (server.cluster_enabled && curr_slot != last_slot) {
                 if (server.in_fork_child && last_slot != -1)
-                    dismissDictBucketsMemory(kvstoreGetDict(db->keys, last_slot));
+                    dismissHashtable(kvstoreGetDict(db->keys, last_slot));
                 last_slot = curr_slot;
             }
 
-            /* Get the value object (of type kvobj) */
-            kvobj *o = dictGetKV(de);
-            
             /* Get the expire time */
             expiretime = kvobjGetExpire(o);
 

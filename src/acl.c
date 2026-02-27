@@ -638,14 +638,14 @@ void ACLChangeSelectorPerm(aclSelector *selector, struct redisCommand *cmd, int 
     ACLSetSelectorCommandBit(selector,id,allow);
     ACLResetFirstArgsForCommand(selector,id);
     if (cmd->subcommands_dict) {
-        dictEntry *de;
-        dictIterator di;
-        dictInitSafeIterator(&di, cmd->subcommands_dict);
-        while((de = dictNext(&di)) != NULL) {
-            struct redisCommand *sub = (struct redisCommand *)dictGetVal(de);
+        hashtableIterator iter;
+        void *entry;
+        hashtableInitIterator(&iter, cmd->subcommands_dict, HASHTABLE_ITER_SAFE);
+        while (hashtableNext(&iter, &entry)) {
+            struct redisCommand *sub = entry;
             ACLSetSelectorCommandBit(selector,sub->id,allow);
         }
-        dictResetIterator(&di);
+        hashtableCleanupIterator(&iter);
     }
 }
 
@@ -655,12 +655,12 @@ void ACLChangeSelectorPerm(aclSelector *selector, struct redisCommand *cmd, int 
  * value. Since the category passed by the user may be non existing, the
  * function returns C_ERR if the category was not found, or C_OK if it was
  * found and the operation was performed. */
-void ACLSetSelectorCommandBitsForCategory(dict *commands, aclSelector *selector, uint64_t cflag, int value) {
-    dictIterator di;
-    dictEntry *de;
-    dictInitIterator(&di, commands);
-    while ((de = dictNext(&di)) != NULL) {
-        struct redisCommand *cmd = dictGetVal(de);
+void ACLSetSelectorCommandBitsForCategory(hashtable *commands, aclSelector *selector, uint64_t cflag, int value) {
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        struct redisCommand *cmd = entry;
         if (cmd->acl_categories & cflag) {
             ACLChangeSelectorPerm(selector,cmd,value);
         }
@@ -668,7 +668,7 @@ void ACLSetSelectorCommandBitsForCategory(dict *commands, aclSelector *selector,
             ACLSetSelectorCommandBitsForCategory(cmd->subcommands_dict, selector, cflag, value);
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 }
 
 /* This function is responsible for recomputing the command bits for all selectors of the existing users.
@@ -720,12 +720,12 @@ int ACLSetSelectorCategory(aclSelector *selector, const char *category, int allo
     return C_OK;
 }
 
-void ACLCountCategoryBitsForCommands(dict *commands, aclSelector *selector, unsigned long *on, unsigned long *off, uint64_t cflag) {
-    dictIterator di;
-    dictEntry *de;
-    dictInitIterator(&di, commands);
-    while ((de = dictNext(&di)) != NULL) {
-        struct redisCommand *cmd = dictGetVal(de);
+void ACLCountCategoryBitsForCommands(hashtable *commands, aclSelector *selector, unsigned long *on, unsigned long *off, uint64_t cflag) {
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        struct redisCommand *cmd = entry;
         if (cmd->acl_categories & cflag) {
             if (ACLGetSelectorCommandBit(selector,cmd->id))
                 (*on)++;
@@ -736,7 +736,7 @@ void ACLCountCategoryBitsForCommands(dict *commands, aclSelector *selector, unsi
             ACLCountCategoryBitsForCommands(cmd->subcommands_dict, selector, on, off, cflag);
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 }
 
 /* Return the number of commands allowed (on) and denied (off) for the user 'u'
@@ -1977,37 +1977,37 @@ int ACLShouldKillPubsubClient(client *c, list *upcoming) {
 
     if (getClientType(c) == CLIENT_TYPE_PUBSUB) {
         /* Check for pattern violations. */
-        dictIterator di;
-        dictEntry *de;
-        dictInitIterator(&di, c->pubsub_patterns);
-        while (!kill && ((de = dictNext(&di)) != NULL)) {
-            o = dictGetKey(de);
+        hashtableIterator iter;
+        void *entry;
+        hashtableInitIterator(&iter, c->pubsub_patterns, 0);
+        while (!kill && hashtableNext(&iter, &entry)) {
+            o = entry;
             int res = ACLCheckChannelAgainstList(upcoming, o->ptr, sdslen(o->ptr), 1);
             kill = (res == ACL_DENIED_CHANNEL);
         }
-        dictResetIterator(&di);
+        hashtableCleanupIterator(&iter);
 
         /* Check for channel violations. */
         if (!kill) {
             /* Check for global channels violation. */
-            dictInitIterator(&di, c->pubsub_channels);
+            hashtableInitIterator(&iter, c->pubsub_channels, 0);
 
-            while (!kill && ((de = dictNext(&di)) != NULL)) {
-                o = dictGetKey(de);
+            while (!kill && hashtableNext(&iter, &entry)) {
+                o = entry;
                 int res = ACLCheckChannelAgainstList(upcoming, o->ptr, sdslen(o->ptr), 0);
                 kill = (res == ACL_DENIED_CHANNEL);
             }
-            dictResetIterator(&di);
+            hashtableCleanupIterator(&iter);
         }
         if (!kill) {
             /* Check for shard channels violation. */
-            dictInitIterator(&di, c->pubsubshard_channels);
-            while (!kill && ((de = dictNext(&di)) != NULL)) {
-                o = dictGetKey(de);
+            hashtableInitIterator(&iter, c->pubsubshard_channels, 0);
+            while (!kill && hashtableNext(&iter, &entry)) {
+                o = entry;
                 int res = ACLCheckChannelAgainstList(upcoming, o->ptr, sdslen(o->ptr), 0);
                 kill = (res == ACL_DENIED_CHANNEL);
             }
-            dictResetIterator(&di);
+            hashtableCleanupIterator(&iter);
         }
 
         if (kill) {
@@ -2800,12 +2800,12 @@ sds getAclErrorMessage(int acl_res, user *user, struct redisCommand *cmd, sds er
  * ==========================================================================*/
 
 /* ACL CAT category */
-void aclCatWithFlags(client *c, dict *commands, uint64_t cflag, int *arraylen) {
-    dictEntry *de;
-    dictIterator di;
-    dictInitIterator(&di, commands);
-    while ((de = dictNext(&di)) != NULL) {
-        struct redisCommand *cmd = dictGetVal(de);
+void aclCatWithFlags(client *c, hashtable *commands, uint64_t cflag, int *arraylen) {
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        struct redisCommand *cmd = entry;
         if (cmd->acl_categories & cflag) {
             addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));
             (*arraylen)++;
@@ -2815,7 +2815,7 @@ void aclCatWithFlags(client *c, dict *commands, uint64_t cflag, int *arraylen) {
             aclCatWithFlags(c, cmd->subcommands_dict, cflag, arraylen);
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 }
 
 /* Add the formatted response from a single selector to the ACL GETUSER

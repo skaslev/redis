@@ -1,4 +1,5 @@
 #include "server.h"
+#include "hashtable.h"
 #include "bio.h"
 #include "atomicvar.h"
 #include "functions.h"
@@ -23,11 +24,10 @@ void lazyfreeFreeObject(void *args[]) {
 static void populateDeltaHistograms(kvstore *kvs, asmTrimCtx *ctx) {
     kvstoreIterator kvs_it;
     kvstoreIteratorInit(&kvs_it, kvs);
-    dictEntry *de;
+    kvobj *kv;
 
-    while ((de = kvstoreIteratorNext(&kvs_it)) != NULL) {
-        kvobj *kv = dictGetKV(de);
-        if ((!kv) || (kv->type >= OBJ_TYPE_BASIC_MAX)) continue;
+    while ((kv = kvstoreIteratorNext(&kvs_it)) != NULL) {
+        if (kv->type >= OBJ_TYPE_BASIC_MAX) continue;
 
         /* Update keysizes_hist delta */
         size_t len = getObjectLength(kv);
@@ -111,11 +111,11 @@ void lazyFreeLuaScripts(void *args[]) {
 /* Release the functions ctx. */
 void lazyFreeFunctionsCtx(void *args[]) {
     functionsLibCtx *functions_lib_ctx = args[0];
-    dict *engs = args[1];
+    hashtable *engs = args[1];
     size_t len = functionsLibCtxFunctionsLen(functions_lib_ctx);
     functionsLibCtxFree(functions_lib_ctx);
-    len += dictSize(engs);
-    dictRelease(engs);
+    len += hashtableSize(engs);
+    hashtableRelease(engs);
     atomicDecr(lazyfree_objects,len);
     atomicIncr(lazyfreed_objects,len);
 }
@@ -170,14 +170,14 @@ size_t lazyfreeGetFreeEffort(robj *key, robj *obj, int dbid) {
         quicklist *ql = obj->ptr;
         return ql->len;
     } else if (obj->type == OBJ_SET && obj->encoding == OBJ_ENCODING_HT) {
-        dict *ht = obj->ptr;
-        return dictSize(ht);
+        hashtable *ht = obj->ptr;
+        return hashtableSize(ht);
     } else if (obj->type == OBJ_ZSET && obj->encoding == OBJ_ENCODING_SKIPLIST){
         zset *zs = obj->ptr;
         return zs->zsl->length;
     } else if (obj->type == OBJ_HASH && obj->encoding == OBJ_ENCODING_HT) {
-        dict *ht = obj->ptr;
-        return dictSize(ht);
+        hashtable *ht = obj->ptr;
+        return hashtableSize(ht);
     } else if (obj->type == OBJ_STREAM) {
         size_t effort = 0;
         stream *s = obj->ptr;
@@ -332,8 +332,8 @@ void emptyDbAsync(redisDb *db) {
     kvstore *oldkeys = db->keys, *oldexpires = db->expires;
     estore *oldsubexpires = db->subexpires;
     dict *old_stream_idmp_keys = db->stream_idmp_keys;
-    db->keys = kvstoreCreate(&kvstoreExType, &dbDictType, slot_count_bits, flags);
-    db->expires = kvstoreCreate(&kvstoreBaseType, &dbExpiresDictType, slot_count_bits, flags);
+    db->keys = kvstoreCreate(&kvstoreExType, &dbHashtableType, slot_count_bits, flags);
+    db->expires = kvstoreCreate(&kvstoreBaseType, &dbExpiresHashtableType, slot_count_bits, flags);
     db->subexpires = estoreCreate(&subexpiresBucketsType, slot_count_bits);
     db->stream_idmp_keys = dictCreate(&objectKeyNoValueDictType);
     protectClientReplyObjects(); /* Protect client reply objects before async free. */
@@ -382,13 +382,13 @@ void freeLuaScriptsAsync(dict *lua_scripts, list *lua_scripts_lru_list, lua_Stat
 }
 
 /* Free functions ctx, if the functions ctx contains enough functions, free it in async way. */
-void freeFunctionsAsync(functionsLibCtx *functions_lib_ctx, dict *engs) {
+void freeFunctionsAsync(functionsLibCtx *functions_lib_ctx, hashtable *engs) {
     if (functionsLibCtxFunctionsLen(functions_lib_ctx) > LAZYFREE_THRESHOLD) {
-        atomicIncr(lazyfree_objects,functionsLibCtxFunctionsLen(functions_lib_ctx)+dictSize(engs));
+        atomicIncr(lazyfree_objects,functionsLibCtxFunctionsLen(functions_lib_ctx)+hashtableSize(engs));
         bioCreateLazyFreeJob(lazyFreeFunctionsCtx,2,functions_lib_ctx,engs);
     } else {
         functionsLibCtxFree(functions_lib_ctx);
-        dictRelease(engs);
+        hashtableRelease(engs);
     }
 }
 

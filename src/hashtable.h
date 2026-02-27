@@ -62,7 +62,7 @@ typedef struct {
     bool (*validateEntry)(hashtable *ht, void *entry);
     /* Callback to free an entry when it's overwritten or deleted.
      * Optional. */
-    void (*entryDestructor)(void *entry);
+    void (*entryDestructor)(hashtable *ht, void *entry);
     /* Callback to prefetch the value associated with a hashtable entry. */
     void (*entryPrefetchValue)(const void *entry);
     /* Callback to control when resizing should be allowed. */
@@ -78,6 +78,8 @@ typedef struct {
     /* Allow a hashtable to carry extra caller-defined metadata. The extra memory
      * is initialized to 0. */
     size_t (*getMetadataSize)(void);
+    /* Pointer to user data, useful in callbacks. */
+    void *userdata;
     /* Flag to disable incremental rehashing */
     unsigned instant_rehashing : 1;
 
@@ -121,6 +123,7 @@ void hashtableEmpty(hashtable *ht, void(callback)(hashtable *));
 hashtableType *hashtableGetType(hashtable *ht);
 hashtableType *hashtableSetType(hashtable *ht, hashtableType *type);
 void *hashtableMetadata(hashtable *ht);
+size_t hashtableHeaderSize(void);
 size_t hashtableSize(const hashtable *ht);
 size_t hashtableBuckets(hashtable *ht);
 size_t hashtableChainedBuckets(hashtable *ht, int table);
@@ -149,6 +152,7 @@ bool hashtableAdd(hashtable *ht, void *entry);
 bool hashtableAddOrFind(hashtable *ht, void *entry, void **existing);
 bool hashtableFindPositionForInsert(hashtable *ht, void *key, hashtablePosition *position, void **existing);
 void hashtableInsertAtPosition(hashtable *ht, void *entry, hashtablePosition *position);
+void **hashtableGetRefAtPosition(hashtablePosition *position);
 bool hashtablePop(hashtable *ht, const void *key, void **popped);
 bool hashtableDelete(hashtable *ht, const void *key);
 void **hashtableTwoPhasePopFindRef(hashtable *ht, const void *key, hashtablePosition *position);

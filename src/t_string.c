@@ -100,8 +100,9 @@ void setGenericCommand(client *c, int flags, robj *key, robj **valref, robj *exp
         if (getGenericCommand(c) == C_ERR) return;
     }
 
-    dictEntryLink link = NULL;
-    found = (lookupKeyWriteWithLink(c->db,key,&link) != NULL);
+    hashtablePosition pos;
+    kvobj *existingKv = lookupKeyWriteWithPosition(c->db, key, &pos);
+    found = (existingKv != NULL);
 
     if ((flags & OBJ_SET_NX && found) ||
         (flags & (OBJ_SET_XX | OBJ_SET_IFEQ | OBJ_SET_IFDEQ) && !found))
@@ -178,10 +179,10 @@ void setGenericCommand(client *c, int flags, robj *key, robj **valref, robj *exp
     setkey_flags |= ((flags & OBJ_KEEPTTL) || expire) ? SETKEY_KEEPTTL : 0;
     setkey_flags |= found ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST;
 
-    setKeyByLink(c, c->db, key, valref, setkey_flags, &link);
-    /* If there's an expiration, setExpireByLink may reallocate the object.
-     * We must update valref to reflect the new object if that happens. */
-    if (expire) *valref = setExpireByLink(c, c->db, key->ptr, milliseconds, link);
+    void **kvref = setKeyByPosition(c, c->db, key, valref, setkey_flags, &pos, existingKv);
+    /* setExpireByRef uses the kvref from setKeyByPosition for O(1) in-place
+     * update if kvobjSetExpire reallocates the object. */
+    if (expire) *valref = setExpireByRef(c, c->db, key, milliseconds, *valref, kvref);
     /* The client still holds a reference to the original object via c->argv[i],
      * and will call decrRefCount() at the end of call(). We increment the refcount
      * from 1 to 2 to ensure both DB and client have valid references. */
@@ -591,8 +592,8 @@ void setrangeCommand(client *c) {
         return;
     }
 
-    dictEntryLink link;
-    kvobj *kv = lookupKeyWriteWithLink(c->db, c->argv[1], &link);
+    hashtablePosition pos;
+    kvobj *kv = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
     if (kv == NULL) {
         /* Return 0 when setting nothing on a non-existing string */
         if (value_len == 0) {
@@ -606,7 +607,7 @@ void setrangeCommand(client *c) {
 
         newLen = offset+value_len;
         robj *o = createObject(OBJ_STRING,sdsnewlen(NULL, newLen));
-        kv = dbAddByLink(c->db, c->argv[1], &o, &link);
+        kv = dbAddByPosition(c->db, c->argv[1], &o, &pos);
     } else {
         /* Key exists, check type */
         if (checkType(c,kv,OBJ_STRING))
@@ -624,7 +625,7 @@ void setrangeCommand(client *c) {
             return;
 
         /* Create a copy when the object is shared or encoded. */
-        kv = dbUnshareStringValueByLink(c->db, c->argv[1], kv, link);
+        kv = dbUnshareStringValue(c->db, c->argv[1], kv, hashtableGetRefAtPosition(&pos));
 
         newLen = max(oldLen, (int64_t) (offset + value_len));
         updateKeysizesHist(c->db, OBJ_STRING, oldLen, newLen);            
@@ -692,7 +693,7 @@ void getrangeCommand(client *c) {
 #define PREFETCH_BATCH_SIZE 16
 
 /* Pick the next prefetch batch starting at argv[start] and warm it via
- * dictPrefetchKeys. 'stride' is 1 for keys-only args (MGET) or 2 for
+ * hashtablePrefetchKeys. 'stride' is 1 for keys-only args (MGET) or 2 for
  * key/value pairs (MSET). Returns the chosen batch size in items. */
 static int prefetchKeysBatch(client *c, int slot, int start, int stride) {
     int batch = (c->argc - start) / stride;
@@ -701,15 +702,15 @@ static int prefetchKeysBatch(client *c, int slot, int start, int stride) {
      * through with batch = remaining keys, doing them in one go. */
     if (batch >= PREFETCH_BATCH_SIZE*2) batch = PREFETCH_BATCH_SIZE;
 
-    dict *d = kvstoreGetDict(c->db->keys, slot);
-    if (d != NULL && dictSize(d) > 0) {
+    hashtable *ht = kvstoreGetDict(c->db->keys, slot);
+    if (ht != NULL && hashtableSize(ht) > 0) {
         void *keys[PREFETCH_BATCH_SIZE*2];
-        dict *dicts[PREFETCH_BATCH_SIZE*2];
+        hashtable *hts[PREFETCH_BATCH_SIZE*2];
         for (int k = 0; k < batch; k++) {
             keys[k]  = c->argv[start + k * stride]->ptr;
-            dicts[k] = d;
+            hts[k] = ht;
         }
-        dictPrefetchKeys(dicts, keys, batch);
+        hashtablePrefetchKeys(hts, keys, batch);
     }
     return batch;
 }
@@ -901,8 +902,8 @@ void msetexCommand(client *c) {
 void incrDecrCommand(client *c, long long incr) {
     long long value, oldvalue;
     robj *new;
-    dictEntryLink link;
-    kvobj *o = lookupKeyWriteWithLink(c->db, c->argv[1], &link);
+    hashtablePosition pos;
+    kvobj *o = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
     if (checkType(c,o,OBJ_STRING)) return;
     if (getLongLongFromObjectOrReply(c,o,&value,NULL) != C_OK) return;
 
@@ -925,11 +926,10 @@ void incrDecrCommand(client *c, long long incr) {
     } else {
         new = createStringObjectFromLongLongForValue(value);
         if (o) {
-            /* replace value in db and also update keysizes hist */
-            dbReplaceValueWithLink(c->db, c->argv[1], &new, link);
+            void **kvref = hashtableGetRefAtPosition(&pos);
+            dbReplaceValue(c->db, c->argv[1], &new, 1, kvref);
         } else {
-            /* Add new key to db and also update keysizes hist */
-            dbAddByLink(c->db, c->argv[1], &new, &link);
+            dbAddByPosition(c->db, c->argv[1], &new, &pos);
         }
     }
     addReplyLongLongFromStr(c,new);
@@ -968,8 +968,8 @@ void decrbyCommand(client *c) {
 void incrbyfloatCommand(client *c) {
     long double incr, value;
 
-    dictEntryLink link;
-    kvobj *o = lookupKeyWriteWithLink(c->db,c->argv[1],&link);
+    hashtablePosition pos;
+    kvobj *o = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
     if (checkType(c,o,OBJ_STRING)) return;
     if (getLongDoubleFromObjectOrReply(c,o,&value,NULL) != C_OK ||
         getLongDoubleFromObjectOrReply(c,c->argv[2],&incr,NULL) != C_OK)
@@ -981,10 +981,12 @@ void incrbyfloatCommand(client *c) {
         return;
     }
     robj *new = createStringObjectFromLongDouble(value,1);
-    if (o)
-        dbReplaceValueWithLink(c->db, c->argv[1], &new, link);
-    else
-        dbAddByLink(c->db, c->argv[1], &new, &link);
+    if (o) {
+        void **kvref = hashtableGetRefAtPosition(&pos);
+        dbReplaceValue(c->db, c->argv[1], &new, 1, kvref);
+    } else {
+        dbAddByPosition(c->db, c->argv[1], &new, &pos);
+    }
     keyModified(c,c->db,c->argv[1],new,1);
     notifyKeyspaceEvent(NOTIFY_STRING,"incrbyfloat",c->argv[1],c->db->id);
     server.dirty++;
@@ -1196,7 +1198,7 @@ static int parseIncrExArgumentsOrReply(client *c, int start_pos, incrExArgs *arg
 void increxCommand(client *c) {
     kvobj *o = NULL;
     robj *new = NULL;
-    dictEntryLink link;
+    hashtablePosition pos;
     long long value_ll, oldvalue_ll = 0;
     long double value_ld, oldvalue_ld = 0;
 
@@ -1204,7 +1206,7 @@ void increxCommand(client *c) {
     if (parseIncrExArgumentsOrReply(c, 2, &args) != C_OK)
         return;
 
-    o = lookupKeyWriteWithLink(c->db, c->argv[1], &link);
+    o = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
     if (checkType(c, o, OBJ_STRING)) return;
 
     int byfloat = args.flags & OBJ_INCREX_BYFLOAT;
@@ -1324,9 +1326,9 @@ void increxCommand(client *c) {
         else
             new = createStringObjectFromLongLongForValue(value_ll);
         if (o)
-            dbReplaceValueWithLink(c->db, c->argv[1], &new, link);
+            setKeyByPosition(c, c->db, c->argv[1], &new, SETKEY_ALREADY_EXIST, &pos, o);
         else
-            dbAddByLink(c->db, c->argv[1], &new, &link);
+            setKeyByPosition(c, c->db, c->argv[1], &new, SETKEY_DOESNT_EXIST, &pos, NULL);
     }
 
     /* Replicate INCREX as SET with the final value to avoid float precision
@@ -1372,12 +1374,12 @@ void appendCommand(client *c) {
     kvobj *o;
     size_t oldsize = 0;
 
-    dictEntryLink link;
-    o = lookupKeyWriteWithLink(c->db,c->argv[1],&link);
+    hashtablePosition pos;
+    o = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
     if (o == NULL) {
         /* Create the key */
         c->argv[2] = tryObjectEncoding(c->argv[2]);
-        o = dbAddByLink(c->db, c->argv[1], &c->argv[2], &link);
+        o = dbAddByPosition(c->db, c->argv[1], &c->argv[2], &pos);
         incrRefCount(c->argv[2]);
         totlen = stringObjectLen(c->argv[2]);
     } else {
@@ -1392,7 +1394,7 @@ void appendCommand(client *c) {
             return;
 
         /* Append the value */
-        o = dbUnshareStringValueByLink(c->db,c->argv[1],o,link);
+        o = dbUnshareStringValue(c->db, c->argv[1], o, hashtableGetRefAtPosition(&pos));
         if (server.memory_tracking_enabled)
             oldsize = kvobjAllocSize(o);
         o->ptr = sdscatlen(o->ptr,append->ptr,append_len);

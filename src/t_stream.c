@@ -49,9 +49,9 @@ void trackStreamClaimTimeouts(client *c, robj **keys, int numkeys, uint64_t expi
 /* Forward declarations for IDMP functions (defined at end of file) */
 static void trackStreamIdmpEntries(client *c, robj *key);
 static void streamClearIdmpEntries(stream *s);
-static void idmpInsertEntry(stream *s, idmpProducer *producer, idmpEntry *entry, const streamID *id);
-static int idmpLookupAndReply(stream *s, idmpProducer *producer, idmpEntry *entry, client *c);
-static int idmpLookup(idmpProducer *producer, idmpEntry *entry, streamID *id);
+static void idmpInsertEntry(stream *s, idmpProducer *producer, idmpEntry *entry, const streamID *id, hashtablePosition *pos);
+static int idmpLookupAndReply(stream *s, idmpProducer *producer, idmpEntry *entry, client *c, hashtablePosition *pos);
+static int idmpLookup(idmpProducer *producer, idmpEntry *entry, streamID *id, hashtablePosition *pos);
 static idmpProducer *idmpGetOrCreateProducer(stream *s, const char *pid, size_t pid_len);
 static int createIdempotencyHash(robj **argv, int64_t numfields, XXH128_hash_t *out_hash);
 static void idmpEvictOldestEntry(stream *s, idmpProducer *producer);
@@ -257,7 +257,7 @@ robj *streamDup(robj *o) {
                 }
                 new_prod->idmp_tail = new_entry;
 
-                dictAdd(new_prod->idmp_dict, new_entry, NULL);
+                hashtableAdd(new_prod->idmp_ht, new_entry);
                 src_entry = src_entry->next;
             }
 
@@ -2346,8 +2346,8 @@ size_t streamReplyWithRangeFromConsumerPEL(client *c, stream *s, streamID *start
 /* Look the stream at 'key' and return the corresponding stream object.
  * The function creates a key setting it to an empty stream if needed. */
 kvobj *streamTypeLookupWriteOrCreate(client *c, robj *key, int no_create) {
-    dictEntryLink link;
-    kvobj *kv = lookupKeyWriteWithLink(c->db,key, &link);
+    hashtablePosition pos;
+    kvobj *kv = lookupKeyWriteWithPosition(c->db, key, &pos);
     if (checkType(c, kv, OBJ_STREAM)) return NULL;
     if (kv != NULL) return kv;
 
@@ -2356,7 +2356,7 @@ kvobj *streamTypeLookupWriteOrCreate(client *c, robj *key, int no_create) {
         return NULL;
     }
     robj *o = createStreamObject();
-    dbAddByLink(c->db, key, &o, &link);
+    dbAddByPosition(c->db, key, &o, &pos);
     return o;
 }
 
@@ -2526,6 +2526,7 @@ void xaddCommand(client *c) {
     size_t iid_len = 0;
     idmpProducer *producer = NULL;
     idmpEntry *entry = NULL;
+    hashtablePosition idmp_pos;
     
     if (parsed_args.idmp_pid != NULL) {
         /* Get or create the producer for this pid */
@@ -2553,7 +2554,7 @@ void xaddCommand(client *c) {
         entry = idmpEntryCreate(iid_str, iid_len, &s->alloc_size);
         
         /* Check if IID already exists and reply if found */
-        if (idmpLookupAndReply(s, producer, entry, c)) {
+        if (idmpLookupAndReply(s, producer, entry, c, &idmp_pos)) {
             /* IID already exists, free the entry and return */
             idmpEntryFree(entry, &s->alloc_size);
             keyModified(c,c->db,c->argv[1],kv,0);
@@ -2592,7 +2593,7 @@ void xaddCommand(client *c) {
 
     /* IDMP: Insert the entry now that we have the actual ID */
     if (parsed_args.idmp_pid != NULL) {
-        idmpInsertEntry(s, producer, entry, &id);
+        idmpInsertEntry(s, producer, entry, &id, &idmp_pos);
         trackStreamIdmpEntries(c, c->argv[1]);
     }
 
@@ -3754,7 +3755,8 @@ void xidmprecordCommand(client *c) {
 
     idmpProducer *producer = idmpGetOrCreateProducer(s, pid_str, pid_len);
     idmpEntry *entry = idmpEntryCreate(iid_str, iid_len, &s->alloc_size);
-    int found = idmpLookup(producer, entry, &id);
+    hashtablePosition idmp_pos;
+    int found = idmpLookup(producer, entry, &id, &idmp_pos);
     if (found) {
         idmpEntryFree(entry, &s->alloc_size);
         if (found == 1)
@@ -3766,7 +3768,7 @@ void xidmprecordCommand(client *c) {
         return;
     }
 
-    idmpInsertEntry(s, producer, entry, &id);
+    idmpInsertEntry(s, producer, entry, &id, &idmp_pos);
     trackStreamIdmpEntries(c, c->argv[1]);
     addReply(c, shared.ok);
     server.dirty++;
@@ -5110,7 +5112,7 @@ void xinfoReplyWithStreamInfo(client *c, robj *key, kvobj *kv) {
         raxSeek(&ri, "^", NULL, 0);
         while (raxNext(&ri)) {
             idmpProducer *producer = ri.data;
-            total_iids += dictSize(producer->idmp_dict);
+            total_iids += hashtableSize(producer->idmp_ht);
         }
         raxStop(&ri);
     }
@@ -5793,39 +5795,25 @@ void handleClaimableStreamEntries(void) {
  * ----------------------------------------------------------------------- */
 
 /* Hash function for idmpEntry - hashes the embedded iid buffer */
-static uint64_t idmpDictHashFunction(const void *key) {
-    const idmpEntry *entry = (const idmpEntry *)key;
-    return dictGenHashFunction((const char *)entry->iid, entry->iid_len);
+/* Hashtable callbacks for IDMP entries */
+static uint64_t idmpHashtableHashFunction(const void *entry) {
+    const idmpEntry *e = (const idmpEntry *)entry;
+    return dictGenHashFunction((const char *)e->iid, e->iid_len);
 }
 
-/* Key comparison function for idmpEntry - compares embedded iid buffers */
-static int idmpDictKeyCompare(dictCmpCache *cache, const void *key1, const void *key2) {
-    UNUSED(cache);
-    const idmpEntry *e1 = (const idmpEntry *)key1;
-    const idmpEntry *e2 = (const idmpEntry *)key2;
-    if (e1->iid_len != e2->iid_len) return 0;
-    return memcmp((const char *)e1->iid, (const char *)e2->iid, e1->iid_len) == 0;
+/* Hashtable callback: compare idmpEntry keys. Returns 0 if equal. */
+static int idmpHashtableKeyCompare(const void *entry, const void *key) {
+    const idmpEntry *e1 = (const idmpEntry *)entry;
+    const idmpEntry *e2 = (const idmpEntry *)key;
+    if (e1->iid_len != e2->iid_len) return 1;  /* Not equal */
+    return memcmp((const char *)e1->iid, (const char *)e2->iid, e1->iid_len);
 }
 
-/* Dictionary type for IDMP entries - keys are idmpEntry pointers, values are NULL */
-dictType idmpDictType = {
-    idmpDictHashFunction,       /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    idmpDictKeyCompare,         /* key compare */
-    NULL,                       /* key destructor - handled manually with linked list */
-    NULL,                       /* val destructor */
-    NULL,                       /* resize allowed */
-    NULL,                       /* rehashing started */
-    NULL,                       /* rehashing completed */
-    NULL,                       /* bucket changed */
-    NULL,                       /* dict metadata bytes */
-    NULL,                       /* userdata */
-    .no_value = 0,              /* Use regular dict entries with NULL values to support defrag */
-    .keys_are_odd = 0,          /* keys are not odd */
-    .force_full_rehash = 0,     /* no force full rehash */
-    NULL,                       /* key from stored key */
-    NULL,                       /* on dict release */
+/* Hashtable type for IDMP entries - entries are idmpEntry pointers */
+static hashtableType idmpHashtableType = {
+    .hashFunction = idmpHashtableHashFunction,
+    .keyCompare = idmpHashtableKeyCompare,
+    .entryDestructor = NULL,  /* handled manually with linked list */
 };
 
 /* Create a new idmpEntry with the given IID string.
@@ -5854,12 +5842,12 @@ void idmpEntryFree(idmpEntry *entry, size_t *alloc_size) {
     *alloc_size -= usable;
 }
 
-/* Create a new idmpProducer with an empty dict and linked list.
+/* Create a new idmpProducer with an empty hashtable and linked list.
  * alloc_size must not be NULL and will be updated with the allocation size. */
 idmpProducer *idmpProducerCreate(size_t *alloc_size) {
     size_t usable;
     idmpProducer *producer = zmalloc_usable(sizeof(idmpProducer), &usable);
-    producer->idmp_dict = dictCreate(&idmpDictType);
+    producer->idmp_ht = hashtableCreate(&idmpHashtableType);
     producer->idmp_head = NULL;
     producer->idmp_tail = NULL;
 
@@ -5868,14 +5856,14 @@ idmpProducer *idmpProducerCreate(size_t *alloc_size) {
     return producer;
 }
 
-/* Free an idmpProducer including its dict and all linked list entries.
+/* Free an idmpProducer including its hashtable and all linked list entries.
  * alloc_size must not be NULL and will be updated with the freed size. */
 void idmpProducerFree(idmpProducer *producer, size_t *alloc_size) {
     if (producer == NULL) return;
 
-    /* Release the dict */
-    if (producer->idmp_dict)
-        dictRelease(producer->idmp_dict);
+    /* Release the hashtable */
+    if (producer->idmp_ht)
+        hashtableRelease(producer->idmp_ht);
 
     /* Free IDMP linked list entries */
     idmpEntry *entry = producer->idmp_head;
@@ -5890,42 +5878,38 @@ void idmpProducerFree(idmpProducer *producer, size_t *alloc_size) {
     *alloc_size -= usable;
 }
 
-/* Check if an IID already exists in the producer's idmp_dict.
+/* Check if an IID already exists in the producer's idmp_ht.
  * If found, sends the existing stream ID as a reply and returns 1.
  * Returns 0 if the IID was not found.
  * 
  * The 'entry' parameter should be an idmpEntry with the IID already set
  * (iid and iid_len fields must be initialized). */
-static int idmpLookupAndReply(stream *s, idmpProducer *producer, idmpEntry *entry, client *c) {
-    dictEntry *de = dictFind(producer->idmp_dict, entry);
-    if (de != NULL) {
-        /* IID already exists, return the existing stream ID */
-        idmpEntry *existing = (idmpEntry *)dictGetKey(de);
-        addReplyStreamID(c, &existing->id);
+static int idmpLookupAndReply(stream *s, idmpProducer *producer, idmpEntry *entry, client *c, hashtablePosition *pos) {
+    void *existing;
+    if (!hashtableFindPositionForInsert(producer->idmp_ht, entry, pos, &existing)) {
+        addReplyStreamID(c, &((idmpEntry *)existing)->id);
         s->iids_duplicates++;
         return 1;
     }
     return 0;
 }
 
-/* Lookup IID in the producer's dict.
+/* Lookup IID in the producer's hashtable.
  * Return: 0 = not found, 1 = found same ID, -1 = found different ID. */
-static int idmpLookup(idmpProducer *producer, idmpEntry *entry, streamID *id) {
-    dictEntry *de = dictFind(producer->idmp_dict, entry);
-    if (de == NULL)
+static int idmpLookup(idmpProducer *producer, idmpEntry *entry, streamID *id, hashtablePosition *pos) {
+    void *existing;
+    if (hashtableFindPositionForInsert(producer->idmp_ht, entry, pos, &existing))
         return 0;
-    idmpEntry *existing = (idmpEntry *)dictGetKey(de);
-    return streamCompareID(&existing->id, id) == 0 ? 1 : -1;
+    return streamCompareID(&((idmpEntry *)existing)->id, id) == 0 ? 1 : -1;
 }
 
-/* Insert an idmpEntry into the producer's dict and linked list with the given stream ID. */
-static void idmpInsertEntry(stream *s, idmpProducer *producer, idmpEntry *entry, const streamID *id) {
-    /* Set the stream ID and initialize next pointer */
+/* Insert an idmpEntry into the producer's hashtable and linked list with the given stream ID.
+ * pos is from a preceding hashtableFindPositionForInsert call. */
+static void idmpInsertEntry(stream *s, idmpProducer *producer, idmpEntry *entry, const streamID *id, hashtablePosition *pos) {
     entry->next = NULL;
     entry->id = *id;
 
-    /* Insert into dict (should always succeed since we already checked with lookup) */
-    serverAssert(dictAdd(producer->idmp_dict, entry, NULL) == DICT_OK);
+    hashtableInsertAtPosition(producer->idmp_ht, entry, pos);
     
     /* Add to linked list tail */
     if (producer->idmp_tail == NULL) {
@@ -6058,8 +6042,8 @@ void handleExpiredIdmpEntries(void) {
                 while (producer->idmp_head != NULL) {
                     idmpEntry *entry = producer->idmp_head;
                     if (entry->id.ms <= expire_time) {
-                        /* Remove from dict */
-                        dictDelete(producer->idmp_dict, entry);
+                        /* Remove from hashtable */
+                        hashtableDelete(producer->idmp_ht, entry);
                         /* Remove from linked list head */
                         producer->idmp_head = entry->next;
                         if (producer->idmp_head == NULL) {
@@ -6195,7 +6179,7 @@ static void streamClearIdmpEntries(stream *s) {
  * dictionary, maintaining the integrity of both data structures. If the list
  * becomes empty after removal, both head and tail pointers are set to NULL. */
 static void idmpEvictOldestEntry(stream *s, idmpProducer *producer) {
-    if (dictSize(producer->idmp_dict) <= s->idmp_max_entries) {
+    if (hashtableSize(producer->idmp_ht) <= s->idmp_max_entries) {
         return;
     }
     
@@ -6204,6 +6188,6 @@ static void idmpEvictOldestEntry(stream *s, idmpProducer *producer) {
     if (producer->idmp_head == NULL) {
         producer->idmp_tail = NULL;
     }
-    dictDelete(producer->idmp_dict, oldest);
+    hashtableDelete(producer->idmp_ht, oldest);
     idmpEntryFree(oldest, &s->alloc_size);
 }

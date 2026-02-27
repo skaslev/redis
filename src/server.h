@@ -1575,9 +1575,9 @@ typedef struct client {
     blockingState bstate;     /* blocking state */
     long long woff;         /* Last write global replication offset. */
     list *watched_keys;     /* Keys WATCHED for MULTI/EXEC CAS */
-    dict *pubsub_channels;  /* channels a client is interested in (SUBSCRIBE) */
-    dict *pubsub_patterns;  /* patterns a client is interested in (PSUBSCRIBE) */
-    dict *pubsubshard_channels;  /* shard level channels a client is interested in (SSUBSCRIBE) */
+    hashtable *pubsub_channels;  /* channels a client is interested in (SUBSCRIBE) */
+    hashtable *pubsub_patterns;  /* patterns a client is interested in (PSUBSCRIBE) */
+    hashtable *pubsubshard_channels;  /* shard level channels a client is interested in (SSUBSCRIBE) */
     sds peerid;             /* Cached peer ID. */
     sds sockname;           /* Cached connection target address. */
     listNode *client_list_node; /* list node in client list */
@@ -1781,9 +1781,14 @@ typedef struct zskiplist {
 } zskiplist;
 
 typedef struct zset {
-    dict *dict;
+    hashtable *ht;
     zskiplist *zsl;
 } zset;
+
+typedef struct pubsubEntry {
+    robj *channel;
+    hashtable *clients;
+} pubsubEntry;
 
 typedef struct clientBufferLimitsConfig {
     unsigned long long hard_limit_bytes;
@@ -2017,8 +2022,8 @@ struct redisServer {
     int hz;                     /* serverCron() calls frequency in hertz */
     int in_fork_child;          /* indication that this is a fork child */
     redisDb *db;
-    dict *commands;             /* Command table */
-    dict *orig_commands;        /* Command table before command renaming. */
+    hashtable *commands;        /* Command table */
+    hashtable *orig_commands;   /* Command table before command renaming. */
     aeEventLoop *el;
     rax *errors;                /* Errors table */
     int errors_enabled;         /* If true, errorstats is enabled, and we will add new errors. */
@@ -3013,8 +3018,8 @@ struct redisCommand {
                                      * still maintained (if applicable) so that
                                      * we can still support the reply format of
                                      * COMMAND INFO and COMMAND GETKEYS */
-    dict *subcommands_dict; /* A dictionary that holds the subcommands, the key is the subcommand sds name
-                             * (not the fullname), and the value is the redisCommand structure pointer. */
+    hashtable *subcommands_dict; /* A hashtable that holds the subcommands, keyed by the subcommand
+                                  * declared_name (not the fullname), value is redisCommand pointer. */
     struct redisCommand *parent;
     struct RedisModuleCommand *module_cmd; /* A pointer to the module command data (NULL if native command) */
 };
@@ -3063,7 +3068,7 @@ typedef struct {
     robj *subject;
     int encoding;
     int ii; /* intset iterator */
-    dictIterator di;
+    hashtableIterator hi;
     unsigned char *lpi; /* listpack iterator */
 } setTypeIterator;
 
@@ -3078,8 +3083,8 @@ typedef struct {
     unsigned char *fptr, *vptr, *tptr;
     uint64_t expire_time; /* Only used with OBJ_ENCODING_LISTPACK_EX */
 
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator hi;
+    void *entry; /* Current Entry* for hashtable iteration */
 } hashTypeIterator;
 
 #include "stream.h"  /* Stream data type header file. */
@@ -3099,26 +3104,28 @@ extern struct sharedObjectsStruct shared;
 extern dictType objectKeyPointerValueDictType;
 extern dictType objectKeyNoValueDictType;
 extern dictType objectKeyHeapPointerValueDictType;
-extern dictType setDictType;
 extern dictType BenchmarkDictType;
-extern dictType zsetDictType;
-extern dictType dbDictType;
 extern double R_Zero, R_PosInf, R_NegInf, R_Nan;
-extern dictType hashDictType;
-extern dictType entryHashDictType;
-extern dictType entryHashDictTypeWithHFE;
 extern dictType stringSetDictType;
 extern dictType externalStringType;
 extern dictType sdsHashDictType;
-extern dictType clientDictType;
-extern dictType objToDictDictType;
-extern dictType dbExpiresDictType;
-extern dictType modulesDictType;
-extern dictType sdsReplyDictType;
+extern hashtableType clientHashtableType;
+extern dictType objToHashtableDictType;
 extern dictType keylistDictType;
 extern kvstoreType kvstoreBaseType;
 extern kvstoreType kvstoreExType;
-extern dict *modules;
+extern hashtableType dbHashtableType;
+extern hashtableType dbExpiresHashtableType;
+extern hashtableType pubsubHashtableType;
+extern hashtableType clientPubSubChannelsType;
+extern hashtableType setHashtableType;
+extern hashtableType zsetHashtableType;
+extern hashtableType hashHashtableType;
+extern hashtableType hashHashtableTypeHFE;
+extern hashtableType sdsHashtableType;
+extern hashtableType sdsHashtableTypeNoDup;
+extern hashtableType modulesHashtableType;
+extern hashtable *modules;
 
 extern EbucketsType subexpiresBucketsType;  /* global expires */
 extern EbucketsType hashFieldExpireBucketsType; /* local per hash */
@@ -3718,9 +3725,9 @@ int changeListener(connListener *listener);
 void closeListener(connListener *listener);
 struct redisCommand *lookupSubcommand(struct redisCommand *container, sds sub_name);
 struct redisCommand *lookupCommand(robj **argv, int argc);
-struct redisCommand *lookupCommandBySdsLogic(dict *commands, sds s);
+struct redisCommand *lookupCommandBySdsLogic(hashtable *commands, sds s);
 struct redisCommand *lookupCommandBySds(sds s);
-struct redisCommand *lookupCommandByCStringLogic(dict *commands, const char *s);
+struct redisCommand *lookupCommandByCStringLogic(hashtable *commands, const char *s);
 struct redisCommand *lookupCommandByCString(const char *s);
 struct redisCommand *lookupCommandOrOriginal(robj **argv, int argc);
 int commandCheckExistence(client *c, sds *err);
@@ -3757,7 +3764,7 @@ void serverLogRawFromHandler(int level, const char *msg);
 void usage(void);
 void updateDictResizePolicy(void);
 void populateCommandTable(void);
-void resetCommandTableStats(dict* commands);
+void resetCommandTableStats(hashtable *commands);
 void resetErrorTableStats(void);
 void adjustOpenFilesLimit(void);
 void incrementErrorCount(const char *fullerr, size_t namelen);
@@ -3784,7 +3791,6 @@ void activeDefragFreeRaw(void *ptr);
 robj *activeDefragStringOb(robj* ob);
 void dismissSds(sds s);
 void dismissMemory(void* ptr, size_t size_hint);
-void dismissDictBucketsMemory(dict *d);
 void dismissKvstoreBucketsMemory(kvstore *kvs);
 void dismissMemoryInChild(void);
 int clientsCronRunClient(client *c);
@@ -3800,10 +3806,10 @@ int calculateKeySlot(sds key);
 int dbExpand(redisDb *db, uint64_t db_size, int try_expand);
 int dbExpandExpires(redisDb *db, uint64_t db_size, int try_expand);
 kvobj *dbFind(redisDb *db, sds key);
-kvobj *dbFindByLink(redisDb *db, sds key, dictEntryLink *link);
+kvobj *dbFindWithPosition(redisDb *db, sds key, hashtablePosition *pos);
 kvobj *dbFindExpires(redisDb *db, sds key);
 unsigned long long dbSize(redisDb *db);
-unsigned long long dbScan(redisDb *db, unsigned long long cursor, dictScanFunction *scan_cb, void *privdata);
+unsigned long long dbScan(redisDb *db, unsigned long long cursor, hashtableScanFunction scan_cb, void *privdata);
 
 /* Set data type */
 robj *setTypeCreate(sds value, size_t size_hint);
@@ -3849,13 +3855,15 @@ typedef struct htMetadataEx {
     ebuckets hfe;            /* DS of Hash Fields Expiration, associated to each hash */
 } htMetadataEx;
 
-/* hash metadata helpers */
-static inline htMetadataEx *htGetMetadataEx(dict *d) {
-    return (htMetadataEx *)dictMetadata(d);
+/* hash metadata helpers for hashtable */
+static inline htMetadataEx *htGetMetadataSize(hashtable *ht) {
+    return (htMetadataEx *)hashtableMetadata(ht);
 }
 
-static inline size_t *htGetMetadataSize(dict *d) {
-    return (size_t *)dictMetadata(d);
+/* Get the alloc_size tracker from hashtable metadata (used by sets and hashes).
+ * Both layouts place alloc_size at offset 0 (htMetadataEx documents this invariant). */
+static inline size_t *htGetAllocSizeMeta(hashtable *ht) {
+    return (size_t *)hashtableMetadata(ht);
 }
 
 /* Hash data type */
@@ -3904,8 +3912,8 @@ void hashTypeFree(robj *o);
 int hashTypeIsExpired(const robj *o, uint64_t expireAt);
 unsigned char *hashTypeListpackGetLp(robj *o);
 uint64_t hashTypeGetMinExpire(robj *o, int accurate);
-ebuckets *hashTypeGetDictMetaHFE(dict *d);
-void initDictExpireMetadata(robj *o);
+ebuckets *hashTypeGetHashtableMetaHFE(hashtable *ht);
+void initHashtableExpireMetadata(robj *o);
 struct listpackEx *listpackExCreate(void);
 void listpackExAddNew(robj *o, char *field, size_t flen,
                       char *value, size_t vlen, uint64_t expireAt);
@@ -3926,8 +3934,8 @@ int serverPubsubShardSubscriptionCount(void);
 size_t pubsubMemOverhead(client *c);
 void unmarkClientAsPubSub(client *c);
 int pubsubTotalSubscriptions(void);
-dict *getClientPubSubChannels(client *c);
-dict *getClientPubSubShardChannels(client *c);
+hashtable *getClientPubSubChannels(client *c);
+hashtable *getClientPubSubShardChannels(client *c);
 
 /* Keyspace events notification */
 void notifyKeyspaceEvent(int type, const char *event, robj *key, int dbid);
@@ -4045,12 +4053,13 @@ int keyIsExpired(redisDb *db, sds key, kvobj *kv);
 int confAllowsExpireDel(void);
 long long getExpire(redisDb *db, sds key, kvobj *kv);
 kvobj *setExpire(client *c, redisDb *db, robj *key, long long when);
-kvobj *setExpireByLink(client *c, redisDb *db, sds key, long long when, dictEntryLink link);
+kvobj *setExpireByRef(client *c, redisDb *db, robj *key, long long when, kvobj *kv, void **kvref);
+kvobj *setExpireInternal(client *c, redisDb *db, sds key, long long when, kvobj *kv, void **kvref);
 int checkAlreadyExpired(long long when);
 int parseExtendedExpireArgumentsOrReply(client *c, int *flags);
 kvobj *lookupKeyRead(redisDb *db, robj *key);
 kvobj *lookupKeyWrite(redisDb *db, robj *key);
-kvobj *lookupKeyWriteWithLink(redisDb *db, robj *key, dictEntryLink *link);
+kvobj *lookupKeyWriteWithPosition(redisDb *db, robj *key, hashtablePosition *pos);
 kvobj *lookupKeyReadOrReply(client *c, robj *key, robj *reply);
 kvobj *lookupKeyWriteOrReply(client *c, robj *key, robj *reply);
 kvobj *lookupKeyReadWithFlags(redisDb *db, robj *key, int flags);
@@ -4070,11 +4079,10 @@ kvobj *kvobjCommandLookupOrReply(client *c, robj *key, robj *reply);
 
 static inline kvobj *dictGetKV(const dictEntry *de) {return (kvobj *) dictGetKey(de);}
 kvobj *dbAdd(redisDb *db, robj *key, robj **valref);
-kvobj *dbAddByLink(redisDb *db, robj *key, robj **valref, dictEntryLink *link);
-kvobj *dbAddInternal(redisDb *db, robj *key, robj **valref, dictEntryLink *link, const KeyMetaSpec *m);
+kvobj *dbAddByPosition(redisDb *db, robj *key, robj **valref, hashtablePosition *pos);
+kvobj *dbAddInternal(redisDb *db, robj *key, robj **valref, hashtablePosition *pos, const KeyMetaSpec *m);
 kvobj *dbAddRDBLoad(redisDb *db, sds key, robj **valref, const KeyMetaSpec *keyMetaSpec);
-void dbReplaceValue(redisDb *db, robj *key, kvobj **ioKeyVal, int updateKeySizes);
-void dbReplaceValueWithLink(redisDb *db, robj *key, robj **val, dictEntryLink link);
+void dbReplaceValue(redisDb *db, robj *key, kvobj **ioKeyVal, int updateKeySizes, void **kvref);
 
 #define SETKEY_KEEPTTL 1
 #define SETKEY_NO_SIGNAL 2
@@ -4082,14 +4090,13 @@ void dbReplaceValueWithLink(redisDb *db, robj *key, robj **val, dictEntryLink li
 #define SETKEY_DOESNT_EXIST 8
 
 void setKey(client *c, redisDb *db, robj *key, robj **ioval, int flags);
-void setKeyByLink(client *c, redisDb *db, robj *key, robj **valref, int flags, dictEntryLink *link);
+void **setKeyByPosition(client *c, redisDb *db, robj *key, robj **valref, int flags, hashtablePosition *pos, kvobj *existingKv);
 robj *dbRandomKey(redisDb *db);
 int dbGenericDelete(redisDb *db, robj *key, int async, int flags);
 int dbSyncDelete(redisDb *db, robj *key);
 int dbDelete(redisDb *db, robj *key);
 int dbDeleteSkipKeysizesUpdate(redisDb *db, robj *key);
-kvobj *dbUnshareStringValue(redisDb *db, robj *key, kvobj *o);
-kvobj *dbUnshareStringValueByLink(redisDb *db, robj *key, kvobj *kv, dictEntryLink link);
+kvobj *dbUnshareStringValue(redisDb *db, robj *key, kvobj *o, void **kvref);
 
 #define FLUSH_TYPE_ALL   0
 #define FLUSH_TYPE_DB    1
@@ -4102,8 +4109,8 @@ void blockClientForAsyncFlush(client *c);
 #define EMPTYDB_NO_FLAGS 0      /* No flags. */
 #define EMPTYDB_ASYNC (1<<0)    /* Reclaim memory in another thread. */
 #define EMPTYDB_NOFUNCTIONS (1<<1) /* Indicate not to flush the functions. */
-long long emptyData(int dbnum, int flags, void(callback)(dict*));
-long long emptyDbStructure(redisDb *dbarray, int dbnum, int async, void(callback)(dict*));
+long long emptyData(int dbnum, int flags, void(callback)(hashtable*));
+long long emptyDbStructure(redisDb *dbarray, int dbnum, int async, void(callback)(hashtable*));
 void flushAllDataAndResetRDB(int flags);
 long long dbTotalServerKeyCount(void);
 redisDb *initTempDb(void);
@@ -4189,7 +4196,7 @@ int ldbPendingChildren(void);
 void luaLdbLineHook(lua_State *lua, lua_Debug *ar);
 void freeLuaScriptsSync(dict *lua_scripts, list *lua_scripts_lru_list, lua_State *lua);
 void freeLuaScriptsAsync(dict *lua_scripts, list *lua_scripts_lru_list, lua_State *lua);
-void freeFunctionsAsync(functionsLibCtx *functions_lib_ctx, dict *engines);
+void freeFunctionsAsync(functionsLibCtx *functions_lib_ctx, hashtable *engines);
 int ldbIsEnabled(void);
 void ldbLog(sds entry);
 void ldbLogRedisReply(char *reply);
@@ -4268,9 +4275,7 @@ void startEvictionTimeProc(void);
 
 /* Keys hashing / comparison functions for dict.c hash tables. */
 uint64_t dictSdsHash(const void *key);
-uint64_t dictPtrHash(const void *key);
 uint64_t dictSdsCaseHash(const void *key);
-size_t dictSdsKeyLen(dict *d, const void *key);
 int dictSdsKeyCompare(dictCmpCache *cache, const void *key1, const void *key2);
 int dictSdsKeyCaseCompare(dictCmpCache *cache, const void *key1, const void *key2);
 void dictSdsDestructor(dict *d, void *val);
@@ -4636,7 +4641,7 @@ int memtest_preserving_test(unsigned long *m, size_t bytes, int passes);
 void mixDigest(unsigned char *digest, const void *ptr, size_t len);
 void xorDigest(unsigned char *digest, const void *ptr, size_t len);
 sds catSubCommandFullname(const char *parent_name, const char *sub_name);
-void commandAddSubcommand(struct redisCommand *parent, struct redisCommand *subcommand, const char *declared_name);
+void commandAddSubcommand(struct redisCommand *parent, struct redisCommand *subcommand);
 void debugDelay(int usec);
 void killThreads(void);
 void makeThreadKillable(void);

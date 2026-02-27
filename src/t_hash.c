@@ -65,47 +65,72 @@ static void hexpireGenericCommand(client *c, long long basetime, int unit);
 static void hfieldPersist(robj *hashObj, Entry *entry);
 static void propagateHashFieldDeletion(redisDb *db, sds key, char *field, size_t fieldLen);
 
-/* hash dictType funcs */
-static void dictEntryDestructor(dict *d, void *entry);
-static size_t hashDictMetadataBytes(dict *d);
-static size_t hashDictWithExpireMetadataBytes(dict *d);
-static void hashDictWithExpireOnRelease(dict *d);
 static kvobj* hashTypeLookupWriteOrCreate(client *c, robj *key);
 
 /*-----------------------------------------------------------------------------
- * Define dictType of hash
- *
- * - Stores fields as entry objects (field-value pairs) with optional expiration
- * - Note that small hashes are represented with listpacks
- * - Once expiration is set for a field, the dict instance and corresponding
- *   dictType are replaced with a dict containing metadata for Hash Field
- *   Expiration (HFE) and using dictType `entryHashDictTypeWithHFE`
- * - Dict uses no_value=1 since entry contains both field and value
+ * Define hashtableType for hash
  *----------------------------------------------------------------------------*/
-dictType entryHashDictType = {
-    dictSdsHash,                                /* lookup hash function */
-    NULL,                                       /* key dup */
-    NULL,                                       /* val dup */
-    dictSdsKeyCompare,                          /* lookup key compare */
-    dictEntryDestructor,                       /* key destructor */
-    NULL,                                       /* val destructor (value is in entry) */
-    .dictMetadataBytes = hashDictMetadataBytes,
-    .no_value = 1,                              /* entry contains both field and value */
-    .keys_are_odd = 1,                          /* entry pointers (SDS) are always odd */
+
+/* Hashtable callback: extract sds field from Entry */
+static const void *hashHashtableGetKey(const void *entry) {
+    return entryGetField((const Entry *)entry);
+}
+
+/* Hashtable callback: compare sds fields */
+static int hashHashtableKeyCompare(const void *key1, const void *key2) {
+    return sdscmp((sds)key1, (sds)key2);
+}
+
+/* Hashtable callback: destructor for hash entries */
+static void htHashEntryDestructor(hashtable *ht, void *entry) {
+    size_t usable;
+    size_t *alloc_size = htGetAllocSizeMeta(ht);
+
+    /* If attached TTL to the field, then remove it from hash's private ebuckets. */
+    if (entryGetExpiry(entry) != EB_EXPIRE_TIME_INVALID) {
+        htMetadataEx *htExpireMeta = htGetMetadataSize(ht);
+        ebRemove(&htExpireMeta->hfe, &hashFieldExpireBucketsType, entry);
+    }
+
+    entryFree(entry, &usable);
+    debugServerAssert(usable <= *alloc_size);
+    *alloc_size -= usable;
+}
+
+/* Hashtable callback: get metadata size for non-HFE hashes */
+static size_t hashHashtableMetadataSize(void) {
+    return sizeof(size_t);  /* Just alloc_size tracking */
+}
+
+/* Hashtable callback: get metadata size for HFE hashes */
+static size_t hashHashtableMetadataSizeHFE(void) {
+    return sizeof(htMetadataEx);  /* Full HFE metadata */
+}
+
+/* hashtableType for hash without field expiration */
+hashtableType hashHashtableType = {
+    .entryGetKey = hashHashtableGetKey,
+    .hashFunction = dictSdsHash,
+    .keyCompare = hashHashtableKeyCompare,
+    .entryDestructor = htHashEntryDestructor,
+    .getMetadataSize = hashHashtableMetadataSize,
 };
 
-/* Define alternative dictType of hash with hash-field expiration (HFE) support */
-dictType entryHashDictTypeWithHFE = {
-    dictSdsHash,                                /* lookup hash function */
-    NULL,                                       /* key dup */
-    NULL,                                       /* val dup */
-    dictSdsKeyCompare,                          /* lookup key compare */
-    dictEntryDestructor,                       /* key destructor */
-    NULL,                                       /* val destructor (value is in entry) */
-    .dictMetadataBytes = hashDictWithExpireMetadataBytes,
-    .onDictRelease = hashDictWithExpireOnRelease,
-    .no_value = 1,                              /* entry contains both field and value */
-    .keys_are_odd = 1,                          /* entry pointers (SDS) are always odd */
+/* hashtableType for hash with field expiration (HFE) support */
+hashtableType hashHashtableTypeHFE = {
+    .entryGetKey = hashHashtableGetKey,
+    .hashFunction = dictSdsHash,
+    .keyCompare = hashHashtableKeyCompare,
+    .entryDestructor = htHashEntryDestructor,
+    .getMetadataSize = hashHashtableMetadataSizeHFE,
+};
+
+/* hashtableType for deduplication (no destructor, entries are borrowed) */
+static hashtableType hashDeduplicationHashtableType = {
+    .entryGetKey = hashHashtableGetKey,
+    .hashFunction = dictSdsHash,
+    .keyCompare = hashHashtableKeyCompare,
+    .entryDestructor = NULL,  /* Don't free entries - they belong to original hash */
 };
 
 /*-----------------------------------------------------------------------------
@@ -156,8 +181,8 @@ typedef enum SetPersistRes {
     HFE_PERSIST_OK =            1
 } SetPersistRes;
 
-static inline int isDictWithMetaHFE(dict *d) {
-    return d->type == &entryHashDictTypeWithHFE;
+static inline int isHashtableWithMetaHFE(hashtable *ht) {
+    return hashtableGetType(ht) == &hashHashtableTypeHFE;
 }
 
 /*-----------------------------------------------------------------------------
@@ -222,47 +247,6 @@ int hashTypeSetExInit(robj *key, kvobj *kvo, client *c, redisDb *db,
 SetExRes hashTypeSetEx(robj *o, sds field, uint64_t expireAt, HashTypeSetEx *exInfo);
 
 void hashTypeSetExDone(HashTypeSetEx *e);
-
-/*-----------------------------------------------------------------------------
- * Accessor functions for dictType of hash
- *----------------------------------------------------------------------------*/
-
-static void dictEntryDestructor(dict *d, void *entry) {
-    size_t usable;
-    size_t *alloc_size = htGetMetadataSize(d);
-
-    /* If attached TTL to the field, then remove it from hash's private ebuckets. */
-    if (entryGetExpiry(entry) != EB_EXPIRE_TIME_INVALID) {
-        htMetadataEx *dictExpireMeta = htGetMetadataEx(d);
-        ebRemove(&dictExpireMeta->hfe, &hashFieldExpireBucketsType, entry);
-    }
-
-    entryFree(entry, &usable);
-    *alloc_size -= usable;
-
-    /* Don't have to update global HFE DS. It's unnecessary. Implementing this
-     * would introduce significant complexity and overhead for an operation that
-     * isn't critical. In the worst case scenario, the hash will be efficiently
-     * updated later by an active-expire operation, or it will be removed by the
-     * hash's dbGenericDelete() function. */
-}
-
-static size_t hashDictMetadataBytes(dict *d) {
-    UNUSED(d);
-    return sizeof(size_t);
-}
-
-static size_t hashDictWithExpireMetadataBytes(dict *d) {
-    UNUSED(d);
-    /* expireMeta of the hash, ref to ebuckets and pointer to hash's key */
-    return sizeof(htMetadataEx);
-}
-
-static void hashDictWithExpireOnRelease(dict *d) {
-    /* for sure allocated with metadata. Otherwise, this func won't be registered */
-    htMetadataEx *dictExpireMeta = htGetMetadataEx(d);
-    ebDestroy(&dictExpireMeta->hfe, &hashFieldExpireBucketsType, NULL);
-}
 
 /*-----------------------------------------------------------------------------
  * listpackEx functions
@@ -619,7 +603,7 @@ void hashTypeTryConversion(redisDb *db, kvobj *o, robj **argv, int start, int en
     size_t new_fields = (end - start + 1) / 2;
     if (new_fields > server.hash_max_listpack_entries) {
         hashTypeConvert(db, o, OBJ_ENCODING_HT);
-        dictExpand(o->ptr, new_fields);
+        hashtableExpand(o->ptr, new_fields);
         return;
     }
 
@@ -693,18 +677,15 @@ GetFieldRes hashTypeGetFromListpack(robj *o, sds field,
  * Returns NULL when the field cannot be found, otherwise the SDS value
  * is returned. */
 GetFieldRes hashTypeGetFromHashTable(robj *o, sds field, sds *value, uint64_t *expiredAt) {
-    dictEntry *de;
+    void *entry;
 
     *expiredAt = EB_EXPIRE_TIME_INVALID;
 
     serverAssert(o->encoding == OBJ_ENCODING_HT);
 
-    de = dictFind(o->ptr, field);
-
-    if (de == NULL)
+    if (!hashtableFind(o->ptr, field, &entry))
         return GETF_NOT_FOUND;
 
-    Entry *entry = dictGetKey(de);
     *expiredAt = entryGetExpiry(entry);
     *value = entryGetValue(entry);
     return GETF_OK;
@@ -998,25 +979,25 @@ int hashTypeSet(redisDb *db, kvobj *o, sds field, sds value, int flags) {
             hashTypeConvert(db, o, OBJ_ENCODING_HT);
 
     } else if (o->encoding == OBJ_ENCODING_HT) {
-        dict *ht = o->ptr;
+        hashtable *ht = o->ptr;
         /* check if field already exists */
-        dictEntryLink bucket, link = dictFindLink(ht, field, &bucket);
-        size_t *alloc_size = htGetMetadataSize(ht);
+        void **ref = hashtableFindRef(ht, field);
+        size_t *alloc_size = htGetAllocSizeMeta(ht);
 
         /* take ownership of value if requested */
         uint32_t newEntryFlags = flags & HASH_SET_TAKE_VALUE;
         flags &= ~HASH_SET_TAKE_VALUE;
 
-        if (link == NULL) {
+        if (ref == NULL) {
             /* Create entry and transfer value ownership if possible */
             size_t usable;
             Entry *newEntry = entryCreate(field, value, newEntryFlags, &usable);
 
-            dictSetKeyAtLink(ht, newEntry, &bucket, 1);
+            hashtableAdd(ht, newEntry);
             *alloc_size += usable;
         } else {
             /* Existing field - update value in entry */
-            Entry *oldEntry = dictGetKey(*link);
+            Entry *oldEntry = *ref;
 
             /* Check if old entry has expiration before potentially freeing it */
             uint64_t oldExpireAt = entryGetExpiry(oldEntry);
@@ -1036,18 +1017,17 @@ int hashTypeSet(redisDb *db, kvobj *o, sds field, sds value, int flags) {
             ssize_t usableDiff;
             Entry *newEntry = entryUpdate(oldEntry, value, newEntryFlags, &usableDiff);
 
-            /* If entry was reallocated, update the dict key */
+            /* If entry was reallocated, update the hashtable entry */
             if (newEntry != oldEntry) {
                 /* entryUpdate already freed the old entry if needed */
-                /* Update the dict to point to the new entry using dictSetKeyAtLink (no_value=1) */
-                dictSetKeyAtLink(ht, newEntry, &link, 0);
+                /* Update the hashtable to point to the new entry */
+                *ref = newEntry;
             }
 
             /* If keeping TTL, add the (potentially new) entry back to ebuckets */
             if (newExpireAt != EB_EXPIRE_TIME_INVALID) {
-                dict *d = o->ptr;
-                htMetadataEx *dictExpireMeta = htGetMetadataEx(d);
-                ebAdd(&dictExpireMeta->hfe, &hashFieldExpireBucketsType, newEntry, newExpireAt);
+                htMetadataEx *htExpireMeta = htGetMetadataSize(ht);
+                ebAdd(&htExpireMeta->hfe, &hashFieldExpireBucketsType, newEntry, newExpireAt);
             }
 
             *alloc_size += usableDiff;
@@ -1065,16 +1045,15 @@ int hashTypeSet(redisDb *db, kvobj *o, sds field, sds value, int flags) {
 }
 
 SetExRes hashTypeSetExpiryHT(HashTypeSetEx *exInfo, sds field, uint64_t expireAt) {
-    dict *ht = exInfo->hashObj->ptr;
-    dictEntryLink link = NULL;
+    hashtable *ht = exInfo->hashObj->ptr;
+    void **ref = NULL;
     Entry *entryNew = NULL;
 
-    link = dictFindLink(ht, field, NULL);
-    if (link == NULL)
+    ref = hashtableFindRef(ht, field);
+    if (ref == NULL)
         return HSETEX_NO_FIELD;
 
-    dictEntry *existingEntry = *link;
-    Entry *oldEntry = dictGetKey(existingEntry);
+    Entry *oldEntry = *ref;
     /* Special value of EXPIRE_TIME_INVALID indicates field should be persisted.*/
     if (expireAt == EB_EXPIRE_TIME_INVALID) {
         /* Return error if already there is no ttl. */
@@ -1087,7 +1066,7 @@ SetExRes hashTypeSetExpiryHT(HashTypeSetEx *exInfo, sds field, uint64_t expireAt
 
     /* If field doesn't have expiry metadata attached */
     if (!entryHasExpiry(oldEntry)) {
-        size_t *alloc_size = htGetMetadataSize(ht);
+        size_t *alloc_size = htGetAllocSizeMeta(ht);
 
         /* For fields without expiry, LT condition is considered valid */
         if (exInfo->expireSetCond & (HFE_XX | HFE_GT))
@@ -1111,7 +1090,7 @@ SetExRes hashTypeSetExpiryHT(HashTypeSetEx *exInfo, sds field, uint64_t expireAt
                 return HSETEX_OK;
 
             /* remove old expiry time from hash's private ebuckets */
-            htMetadataEx *dm = htGetMetadataEx(ht);
+            htMetadataEx *dm = htGetMetadataSize(ht);
             ebRemove(&dm->hfe, &hashFieldExpireBucketsType, oldEntry);
 
             /* Track of minimum expiration time (only later update global HFE DS) */
@@ -1130,8 +1109,10 @@ SetExRes hashTypeSetExpiryHT(HashTypeSetEx *exInfo, sds field, uint64_t expireAt
         entryNew = oldEntry;
     }
 
-    dictSetKeyAtLink(ht, entryNew, &link, 0);  /* newItem=0 for updating existing entry */
-
+    /* Update the hashtable entry if it was reallocated */
+    if (entryNew != oldEntry) {
+        *ref = entryNew;
+    }
 
     /* If expired, then delete the field and propagate the deletion.
      * If replica, continue like the field is valid */
@@ -1146,7 +1127,7 @@ SetExRes hashTypeSetExpiryHT(HashTypeSetEx *exInfo, sds field, uint64_t expireAt
     if (exInfo->minExpireFields > expireAt)
         exInfo->minExpireFields = expireAt;
 
-    htMetadataEx *dm = htGetMetadataEx(ht);
+    htMetadataEx *dm = htGetMetadataSize(ht);
     ebAdd(&dm->hfe, &hashFieldExpireBucketsType, entryNew, expireAt);
     return HSETEX_OK;
 }
@@ -1191,19 +1172,61 @@ SetExRes hashTypeSetEx(robj *o, sds field, uint64_t expireAt, HashTypeSetEx *exI
     return HSETEX_OK; /* never reach here */
 }
 
-void initDictExpireMetadata(robj *o) {
-    dict *ht = o->ptr;
+void initHashtableExpireMetadata(robj *o) {
+    hashtable *ht = o->ptr;
 
-    htMetadataEx *m = htGetMetadataEx(ht);
+    htMetadataEx *m = htGetMetadataSize(ht);
     m->hfe = ebCreate();     /* Allocate HFE DS */
     m->expireMeta.trash = 1; /* mark as trash (as long it wasn't ebAdd()) */
+}
+
+/* Upgrade a hash from non-HFE to HFE hashtable type.
+ * Creates a new hashtable with HFE metadata and migrates all entries. */
+static void hashUpgradeToHFE(robj *o) {
+    hashtable *oldHt = o->ptr;
+    hashtable *newHt = hashtableCreate(&hashHashtableTypeHFE);
+
+    /* Expand new hashtable to match old one */
+    hashtableExpand(newHt, hashtableSize(oldHt));
+
+    /* Copy alloc_size from old hashtable metadata */
+    size_t *oldAllocSize = htGetAllocSizeMeta(oldHt);
+    htMetadataEx *newMeta = htGetMetadataSize(newHt);
+    newMeta->alloc_size = *oldAllocSize;
+    newMeta->hfe = ebCreate();     /* Allocate HFE DS */
+    newMeta->expireMeta.trash = 1; /* mark as trash (as long it wasn't ebAdd()) */
+
+    /* First, iterate and add all entries to new hashtable */
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, oldHt, 0);
+    while (hashtableNext(&iter, &entry)) {
+        hashtableAdd(newHt, entry);
+    }
+    hashtableCleanupIterator(&iter);
+
+    /* Now empty the old hashtable without calling destructor.
+     * We do this by calling hashtableEmpty which clears the buckets.
+     * Since our entries are now in newHt, we need to prevent double-free.
+     * We'll iterate again and pop each entry (which doesn't call destructor). */
+    hashtableInitIterator(&iter, oldHt, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        sds field = entryGetField(entry);
+        void *popped;
+        hashtablePop(oldHt, field, &popped);
+    }
+    hashtableCleanupIterator(&iter);
+
+    /* Release the now-empty old hashtable */
+    hashtableRelease(oldHt);
+
+    o->ptr = newHt;
 }
 
 /* Init HashTypeSetEx struct before calling hashTypeSetEx() */
 int hashTypeSetExInit(robj *key, kvobj *o, client *c, redisDb *db,
                       ExpireSetCond expireSetCond, HashTypeSetEx *ex)
 {
-    dict *ht = o->ptr;
     ex->expireSetCond = expireSetCond;
     ex->minExpire = EB_EXPIRE_TIME_INVALID;
     ex->c = c;
@@ -1216,19 +1239,10 @@ int hashTypeSetExInit(robj *key, kvobj *o, client *c, redisDb *db,
     if (o->encoding == OBJ_ENCODING_LISTPACK) {
         hashTypeConvert(c->db, o, OBJ_ENCODING_LISTPACK_EX);
     } else if (o->encoding == OBJ_ENCODING_HT) {
-        /* Take care dict has HFE metadata */
-        if (!isDictWithMetaHFE(ht)) {
-            /* Realloc (only header of dict) with metadata for hash-field expiration */
-            dictTypeAddMeta(&ht, &entryHashDictTypeWithHFE);
-            htMetadataEx *m = htGetMetadataEx(ht);
-            o->ptr = ht;
-
-            /* Find the key in the keyspace. Need to keep reference to the key for
-             * notifications or even removal of the hash */
-
-            /* Fillup dict HFE metadata */
-            m->hfe = ebCreate();     /* Allocate HFE DS */
-            m->expireMeta.trash = 1; /* mark as trash (as long it wasn't ebAdd()) */
+        /* Take care hashtable has HFE metadata */
+        if (!isHashtableWithMetaHFE(o->ptr)) {
+            /* Upgrade to HFE hashtable type */
+            hashUpgradeToHFE(o);
         }
     }
 
@@ -1315,8 +1329,20 @@ int hashTypeDelete(robj *o, void *field) {
             }
         }
     } else if (o->encoding == OBJ_ENCODING_HT) {
-        /* dictDelete() will call dictEntryDestructor() */
-        if (dictDelete((dict*)o->ptr, field) == C_OK) {
+        hashtable *ht = o->ptr;
+        void *entry;
+        if (hashtablePop(ht, field, &entry)) {
+            size_t usable;
+            size_t *alloc_size = htGetAllocSizeMeta(ht);
+
+            /* If attached TTL to the field, remove from hash's private ebuckets */
+            if (entryGetExpiry(entry) != EB_EXPIRE_TIME_INVALID) {
+                htMetadataEx *htExpireMeta = htGetMetadataSize(ht);
+                ebRemove(&htExpireMeta->hfe, &hashFieldExpireBucketsType, entry);
+            }
+
+            entryFree(entry, &usable);
+            *alloc_size -= usable;
             deleted = 1;
         }
     } else {
@@ -1345,16 +1371,16 @@ unsigned long hashTypeLength(const robj *o, int subtractExpiredFields) {
             length -= listpackExExpireDryRun(o);
     } else if (o->encoding == OBJ_ENCODING_HT) {
         uint64_t expiredItems = 0;
-        dict *d = (dict*)o->ptr;
-        if (subtractExpiredFields && isDictWithMetaHFE(d)) {
-            htMetadataEx *meta = htGetMetadataEx(d);
-            /* If dict registered in global HFE DS */
+        hashtable *ht = (hashtable*)o->ptr;
+        if (subtractExpiredFields && isHashtableWithMetaHFE(ht)) {
+            htMetadataEx *meta = htGetMetadataSize(ht);
+            /* If hashtable registered in global HFE DS */
             if (meta->expireMeta.trash == 0)
                 expiredItems = ebExpireDryRun(meta->hfe,
                                               &hashFieldExpireBucketsType,
                                               commandTimeSnapshot());
         }
-        length = dictSize(d) - expiredItems;
+        length = hashtableSize(ht) - expiredItems;
     } else {
         serverPanic("Unknown hash encoding");
     }
@@ -1370,8 +1396,8 @@ size_t hashTypeAllocSize(const robj *o) {
         listpackEx *lpt = o->ptr;
         size = sizeof(listpackEx) + lpBytes(lpt->lp);
     } else if (o->encoding == OBJ_ENCODING_HT) {
-        dict *d = o->ptr;
-        size += sizeof(dict) + dictMemUsage(d) + *htGetMetadataSize(d);
+        hashtable *ht = o->ptr;
+        size += hashtableMemUsage(ht) + *htGetAllocSizeMeta(ht);
     } else {
         serverPanic("Unknown hash encoding");
     }
@@ -1390,7 +1416,8 @@ void hashTypeInitIterator(hashTypeIterator *hi, robj *subject) {
         hi->tptr = NULL;
         hi->expire_time = EB_EXPIRE_TIME_INVALID;
     } else if (hi->encoding == OBJ_ENCODING_HT) {
-        dictInitIterator(&hi->di, subject->ptr);
+        hashtableInitIterator(&hi->hi, subject->ptr, 0);
+        hi->entry = NULL;
     } else {
         serverPanic("Unknown hash encoding");
     }
@@ -1398,7 +1425,7 @@ void hashTypeInitIterator(hashTypeIterator *hi, robj *subject) {
 
 void hashTypeResetIterator(hashTypeIterator *hi) {
     if (hi->encoding == OBJ_ENCODING_HT)
-        dictResetIterator(&hi->di);
+        hashtableCleanupIterator(&hi->hi);
 }
 
 /* Move to the next entry in the hash. Return C_OK when the next entry
@@ -1477,8 +1504,8 @@ int hashTypeNext(hashTypeIterator *hi, int skipExpiredFields) {
         hi->expire_time = (expire_time != HASH_LP_NO_TTL) ? (uint64_t) expire_time : EB_EXPIRE_TIME_INVALID;
     } else if (hi->encoding == OBJ_ENCODING_HT) {
 
-        while ((hi->de = dictNext(&hi->di)) != NULL) {
-            Entry *e = dictGetKey(hi->de);
+        while (hashtableNext(&hi->hi, &hi->entry)) {
+            Entry *e = hi->entry;
             hi->expire_time = entryGetExpiry(e);
             /* this condition still valid if expire_time equals EB_EXPIRE_TIME_INVALID */
             if (skipExpiredFields && ((mstime_t)hi->expire_time < commandTimeSnapshot()))
@@ -1522,7 +1549,7 @@ void hashTypeCurrentFromListpack(hashTypeIterator *hi, int what,
  */
 void hashTypeCurrentFromHashTable(hashTypeIterator *hi, int what, char **str, size_t *len, uint64_t *expireTime) {
     serverAssert(hi->encoding == OBJ_ENCODING_HT);
-    Entry *e = dictGetKey(hi->de);
+    Entry *e = hi->entry;
 
     if (what & OBJ_HASH_KEY) {
         sds field = entryGetField(e);
@@ -1617,13 +1644,13 @@ Entry *hashTypeCurrentObjectNewEntry(hashTypeIterator *hi, size_t *usable) {
 }
 
 static kvobj *hashTypeLookupWriteOrCreate(client *c, robj *key) {
-    dictEntryLink link;
-    kvobj *kv = lookupKeyWriteWithLink(c->db, key, &link);
+    hashtablePosition pos;
+    kvobj *kv = lookupKeyWriteWithPosition(c->db, key, &pos);
     if (checkType(c, kv, OBJ_HASH)) return NULL;
 
     if (kv == NULL) {
         robj *o = createHashObject();
-        kv = dbAddByLink(c->db, key, &o, &link);
+        kv = dbAddByPosition(c->db, key, &o, &pos);
     }
     return kv;
 }
@@ -1654,20 +1681,18 @@ void hashTypeConvertListpack(robj *o, int enc) {
         o->ptr = lpt;
     } else if (enc == OBJ_ENCODING_HT) {
         hashTypeIterator hi;
-        dict *dict;
-        int ret;
+        hashtable *ht;
 
         hashTypeInitIterator(&hi, o);
-        dict = dictCreate(&entryHashDictType);
+        ht = hashtableCreate(&hashHashtableType);
 
-        /* Presize the dict to avoid rehashing */
-        dictExpand(dict,hashTypeLength(o, 0));
+        /* Presize the hashtable to avoid rehashing */
+        hashtableExpand(ht, hashTypeLength(o, 0));
 
-        size_t usable, *alloc_size = htGetMetadataSize(dict);
+        size_t usable, *alloc_size = htGetAllocSizeMeta(ht);
         while (hashTypeNext(&hi, 0) != C_ERR) {
             Entry *entry = hashTypeCurrentObjectNewEntry(&hi, &usable);
-            ret = dictAdd(dict, entry, NULL);
-            if (ret != DICT_OK) {
+            if (!hashtableAdd(ht, entry)) {
                 entryFree(entry, NULL); /* Needed for gcc ASAN */
                 hashTypeResetIterator(&hi);  /* Needed for gcc ASAN */
                 serverLogHexDump(LL_WARNING,"listpack with dup elements dump",
@@ -1679,7 +1704,7 @@ void hashTypeConvertListpack(robj *o, int enc) {
         hashTypeResetIterator(&hi);
         zfree(o->ptr);
         o->encoding = OBJ_ENCODING_HT;
-        o->ptr = dict;
+        o->ptr = ht;
     } else {
         serverPanic("Unknown hash encoding");
     }
@@ -1693,10 +1718,10 @@ void hashTypeConvertListpackEx(redisDb *db, robj *o, int enc) {
         return;
     } else if (enc == OBJ_ENCODING_HT) {
         uint64_t minExpire = EB_EXPIRE_TIME_INVALID;
-        int ret, slot = -1;
+        int slot = -1;
         hashTypeIterator hi;
-        dict *dict;
-        htMetadataEx *dictExpireMeta;
+        hashtable *ht;
+        htMetadataEx *htExpireMeta;
         listpackEx *lpt = o->ptr;
 
         if (db && lpt->meta.trash != 1) {
@@ -1705,22 +1730,21 @@ void hashTypeConvertListpackEx(redisDb *db, robj *o, int enc) {
             estoreRemove(db->subexpires, slot, o);
         }
 
-        dict = dictCreate(&entryHashDictTypeWithHFE);
-        dictExpand(dict,hashTypeLength(o, 0));
-        dictExpireMeta = htGetMetadataEx(dict);
+        ht = hashtableCreate(&hashHashtableTypeHFE);
+        hashtableExpand(ht, hashTypeLength(o, 0));
+        htExpireMeta = htGetMetadataSize(ht);
 
-        /* Fillup dict HFE metadata */
-        dictExpireMeta->hfe = ebCreate();     /* Allocate HFE DS */
-        dictExpireMeta->expireMeta.trash = 1; /* mark as trash (as long it wasn't ebAdd()) */
+        /* Fillup hashtable HFE metadata */
+        htExpireMeta->hfe = ebCreate();     /* Allocate HFE DS */
+        htExpireMeta->expireMeta.trash = 1; /* mark as trash (as long it wasn't ebAdd()) */
 
         hashTypeInitIterator(&hi, o);
 
-        size_t usable, *alloc_size = &dictExpireMeta->alloc_size;
+        size_t usable, *alloc_size = &htExpireMeta->alloc_size;
         while (hashTypeNext(&hi, 0) != C_ERR) {
             /* Create entry with both field and value */
             Entry *entry = hashTypeCurrentObjectNewEntry(&hi, &usable);
-            ret = dictAdd(dict, entry, NULL);
-            if (ret != DICT_OK) {
+            if (!hashtableAdd(ht, entry)) {
                 entryFree(entry, NULL); /* Needed for gcc ASAN */
                 hashTypeResetIterator(&hi);  /* Needed for gcc ASAN */
                 serverLogHexDump(LL_WARNING,"listpack with dup elements dump",
@@ -1730,13 +1754,13 @@ void hashTypeConvertListpackEx(redisDb *db, robj *o, int enc) {
             *alloc_size += usable;
 
             if (hi.expire_time != EB_EXPIRE_TIME_INVALID)
-                ebAdd(&dictExpireMeta->hfe, &hashFieldExpireBucketsType, entry, hi.expire_time);
+                ebAdd(&htExpireMeta->hfe, &hashFieldExpireBucketsType, entry, hi.expire_time);
         }
         hashTypeResetIterator(&hi);
         listpackExFree(lpt);
 
         o->encoding = OBJ_ENCODING_HT;
-        o->ptr = dict;
+        o->ptr = ht;
 
         if (minExpire != EB_EXPIRE_TIME_INVALID)
             estoreAdd(db->subexpires, slot, o, minExpire);
@@ -1791,28 +1815,28 @@ robj *hashTypeDup(kvobj *o, uint64_t *minHashExpire) {
         hobj = createObject(OBJ_HASH, dup);
         hobj->encoding = OBJ_ENCODING_LISTPACK_EX;
     } else if(o->encoding == OBJ_ENCODING_HT) {
-        htMetadataEx *dictExpireMetaSrc, *dictExpireMetaDst = NULL;
-        dict *d;
+        htMetadataEx *htExpireMetaSrc, *htExpireMetaDst = NULL;
+        hashtable *ht;
 
-        /* If dict doesn't have HFE metadata, then create a new dict without it */
-        if (!isDictWithMetaHFE(o->ptr)) {
-            d = dictCreate(&entryHashDictType);
+        /* If hashtable doesn't have HFE metadata, then create a new hashtable without it */
+        if (!isHashtableWithMetaHFE(o->ptr)) {
+            ht = hashtableCreate(&hashHashtableType);
         } else {
-            /* Create a new dict with HFE metadata */
-            d = dictCreate(&entryHashDictTypeWithHFE);
-            dictExpireMetaSrc = htGetMetadataEx((dict *) o->ptr);
-            dictExpireMetaDst = htGetMetadataEx(d);
-            dictExpireMetaDst->hfe = ebCreate();     /* Allocate HFE DS */
-            dictExpireMetaDst->expireMeta.trash = 1; /* mark as trash (as long it wasn't ebAdd()) */
+            /* Create a new hashtable with HFE metadata */
+            ht = hashtableCreate(&hashHashtableTypeHFE);
+            htExpireMetaSrc = htGetMetadataSize((hashtable *) o->ptr);
+            htExpireMetaDst = htGetMetadataSize(ht);
+            htExpireMetaDst->hfe = ebCreate();     /* Allocate HFE DS */
+            htExpireMetaDst->expireMeta.trash = 1; /* mark as trash (as long it wasn't ebAdd()) */
 
             /* Extract the minimum expire time of the source hash (Will be used by caller
              * to register the new hash in the global subexpires DB) */
-            if (dictExpireMetaSrc->expireMeta.trash == 0)
-                *minHashExpire = ebGetMetaExpTime(&dictExpireMetaSrc->expireMeta);
+            if (htExpireMetaSrc->expireMeta.trash == 0)
+                *minHashExpire = ebGetMetaExpTime(&htExpireMetaSrc->expireMeta);
         }
-        dictExpand(d, dictSize((const dict*)o->ptr));
+        hashtableExpand(ht, hashtableSize((hashtable*)o->ptr));
 
-        size_t usable, *alloc_size = htGetMetadataSize(d);
+        size_t usable, *alloc_size = htGetAllocSizeMeta(ht);
         hashTypeInitIterator(&hi, o);
         while (hashTypeNext(&hi, 0) != C_ERR) {
             Entry *newEntry;
@@ -1833,17 +1857,17 @@ robj *hashTypeDup(kvobj *o, uint64_t *minHashExpire) {
             } else {
                 newEntry = entryCreate(newFieldSds, newValueSds, 
                                        ENTRY_TAKE_VALUE | ENTRY_HAS_EXPIRY, &usable);
-                ebAdd(&dictExpireMetaDst->hfe, &hashFieldExpireBucketsType, newEntry, expireTime);
+                ebAdd(&htExpireMetaDst->hfe, &hashFieldExpireBucketsType, newEntry, expireTime);
             }
             sdsfree(newFieldSds); /* (Only value ownership transferred to entry) */
 
             /* Add entry to new hash object. */
-            dictAdd(d, newEntry, NULL);  /* no_value=1, so value is NULL */
+            hashtableAdd(ht, newEntry);
             *alloc_size += usable;
         }
         hashTypeResetIterator(&hi);
 
-        hobj = createObject(OBJ_HASH, d);
+        hobj = createObject(OBJ_HASH, ht);
         hobj->encoding = OBJ_ENCODING_HT;
     } else {
         serverPanic("Unknown hash encoding");
@@ -1870,8 +1894,8 @@ void hashReplyFromListpackEntry(client *c, listpackEntry *e) {
  * 'val' can be NULL in which case it's not extracted. */
 void hashTypeRandomElement(robj *hashobj, unsigned long hashsize, CommonEntry *key, CommonEntry *val) {
     if (hashobj->encoding == OBJ_ENCODING_HT) {
-        dictEntry *de = dictGetFairRandomKey(hashobj->ptr);
-        Entry *entry = dictGetKey(de);
+        void *entry;
+        hashtableFairRandomEntry(hashobj->ptr, &entry);
         sds field = entryGetField(entry);
         key->sval = (unsigned char*) field;
         key->slen = sdslen(field);
@@ -1920,11 +1944,11 @@ uint64_t hashTypeExpire(redisDb *db, kvobj *o, uint32_t *quota, int updateSubexp
     } else {
         serverAssert(o->encoding == OBJ_ENCODING_HT);
 
-        dict *d = o->ptr;
-        htMetadataEx *dictExpireMeta = htGetMetadataEx(d);
+        hashtable *ht = o->ptr;
+        htMetadataEx *htExpireMeta = htGetMetadataSize(ht);
 
         info.onExpireItem = onFieldExpire;
-        ebExpire(&dictExpireMeta->hfe, &hashFieldExpireBucketsType, &info);
+        ebExpire(&htExpireMeta->hfe, &hashFieldExpireBucketsType, &info);
     }
 
     /* Update quota left */
@@ -2027,11 +2051,11 @@ uint64_t hashTypeGetMinExpire(robj *o, int accurate) {
         } else {
             serverAssert(o->encoding == OBJ_ENCODING_HT);
 
-            dict *d = o->ptr;
-            if (!isDictWithMetaHFE(d))
+            hashtable *ht = o->ptr;
+            if (!isHashtableWithMetaHFE(ht))
                 return EB_EXPIRE_TIME_INVALID;
 
-            expireMeta = &htGetMetadataEx(d)->expireMeta;
+            expireMeta = &htGetMetadataSize(ht)->expireMeta;
         }
 
         /* Keep aside next hash-field expiry before updating HFE DS. Verify it is not trash */
@@ -2050,11 +2074,11 @@ uint64_t hashTypeGetMinExpire(robj *o, int accurate) {
     } else {
         serverAssert(o->encoding == OBJ_ENCODING_HT);
 
-        dict *d = o->ptr;
-        if (!isDictWithMetaHFE(d))
+        hashtable *ht = o->ptr;
+        if (!isHashtableWithMetaHFE(ht))
             return EB_EXPIRE_TIME_INVALID;
 
-        htMetadataEx *expireMeta = htGetMetadataEx(d);
+        htMetadataEx *expireMeta = htGetMetadataSize(ht);
         return ebGetNextTimeToExpire(expireMeta->hfe, &hashFieldExpireBucketsType);
     }
 }
@@ -2065,11 +2089,11 @@ int hashTypeIsFieldsWithExpire(robj *o) {
     } else if (o->encoding == OBJ_ENCODING_LISTPACK_EX) {
         return EB_EXPIRE_TIME_INVALID != listpackExGetMinExpire(o);
     } else { /* o->encoding == OBJ_ENCODING_HT */
-        dict *d = o->ptr;
-        /* If dict doesn't holds HFE metadata */
-        if (!isDictWithMetaHFE(d))
+        hashtable *ht = o->ptr;
+        /* If hashtable doesn't hold HFE metadata */
+        if (!isHashtableWithMetaHFE(ht))
             return 0;
-        htMetadataEx *meta = htGetMetadataEx(d);
+        htMetadataEx *meta = htGetMetadataSize(ht);
         return ebGetTotalItems(meta->hfe, &hashFieldExpireBucketsType) != 0;
     }
 }
@@ -2078,15 +2102,15 @@ void hashTypeFree(robj *o) {
     switch (o->encoding) {
         case OBJ_ENCODING_HT:
             /* Verify hash is not registered in global HFE ds */
-            if (isDictWithMetaHFE((dict*)o->ptr)) {
-                htMetadataEx *m = htGetMetadataEx((dict*)o->ptr);
+            if (isHashtableWithMetaHFE((hashtable*)o->ptr)) {
+                htMetadataEx *m = htGetMetadataSize((hashtable*)o->ptr);
                 serverAssert(m->expireMeta.trash == 1);
             }
 #ifdef DEBUG_ASSERTIONS
-            dictEmpty(o->ptr, NULL);
-            debugServerAssert(*htGetMetadataSize(o->ptr) == 0);
+            hashtableEmpty(o->ptr, NULL);
+            debugServerAssert(*htGetAllocSizeMeta(o->ptr) == 0);
 #endif
-            dictRelease((dict*) o->ptr);
+            hashtableRelease((hashtable*) o->ptr);
             break;
         case OBJ_ENCODING_LISTPACK:
             lpFree(o->ptr);
@@ -2102,9 +2126,9 @@ void hashTypeFree(robj *o) {
     }
 }
 
-ebuckets *hashTypeGetDictMetaHFE(dict *d) {
-    htMetadataEx *dictExpireMeta = htGetMetadataEx(d);
-    return &dictExpireMeta->hfe;
+ebuckets *hashTypeGetHashtableMetaHFE(hashtable *ht) {
+    htMetadataEx *htExpireMeta = htGetMetadataSize(ht);
+    return &htExpireMeta->hfe;
 }
 
 /*-----------------------------------------------------------------------------
@@ -2404,14 +2428,14 @@ void hsetexCommand(client *c) {
     long long expire_time = EB_EXPIRE_TIME_INVALID;
     int64_t oldlen, newlen;
     HashTypeSetEx setex;
-    dictEntryLink link;
+    hashtablePosition pos;
     size_t oldsize = 0;
 
     if (parseHashFieldExpireArgs(c, &flags, &expire_time, &expire_time_pos,
                                  &first_field_pos, &field_count, HASH_CMD_HSETEX) != C_OK)
         return;
 
-    kvobj *o = lookupKeyWriteWithLink(c->db, c->argv[1], &link);
+    kvobj *o = lookupKeyWriteWithPosition(c->db, c->argv[1], &pos);
     if (checkType(c, o, OBJ_HASH))
         return;
 
@@ -2421,7 +2445,7 @@ void hsetexCommand(client *c) {
             return;
         }
         o = createHashObject();
-        dbAddByLink(c->db, c->argv[1], &o, &link);
+        dbAddByPosition(c->db, c->argv[1], &o, &pos);
     }
     oldlen = (int64_t) hashTypeLength(o, 0);
     if (server.memory_tracking_enabled)
@@ -3063,7 +3087,7 @@ void hdelCommand(client *c) {
     vec *vdeleted = fieldvecInit(&fvdeleted, c->argc - 2);
 
     if (o->encoding == OBJ_ENCODING_HT)
-        dictPauseAutoResize((dict*)o->ptr);
+        hashtablePauseAutoShrink((hashtable*)o->ptr);
     for (j = 2; j < c->argc; j++) {
         if (hashTypeDelete(o,c->argv[j]->ptr)) {
             vecPush(vdeleted, c->argv[j]);
@@ -3075,8 +3099,8 @@ void hdelCommand(client *c) {
     }
     
     if (!keyremoved && o->encoding == OBJ_ENCODING_HT) {
-        dictResumeAutoResize((dict*)o->ptr);
-        dictShrinkIfNeeded((dict*)o->ptr);
+        hashtableResumeAutoShrink((hashtable*)o->ptr);
+        hashtableShrinkIfNeeded((hashtable*)o->ptr);
     }
     if (server.memory_tracking_enabled)
         updateSlotAllocSize(c->db, getKeySlot(c->argv[1]->ptr), o, oldsize, kvobjAllocSize(o));
@@ -3189,16 +3213,16 @@ void genericHgetallCommand(client *c, int flags) {
         oldsize = kvobjAllocSize(o);
 
     /* Fast path: batched prefetch for hashtable-encoded HGETALL.
-     * Collect a batch of dict entries, prefetch their Entry structs and
+     * Collect a batch of entries, prefetch their Entry structs and
      * value SDS data, then emit replies while the data is cache-warm.
      * This hides the latency of pointer chasing through scattered
-     * heap allocations (dictEntry → Entry → value SDS). */
+     * heap allocations (Entry → value SDS). */
 #define HGETALL_BATCH 16
     if (o->encoding == OBJ_ENCODING_HT) {
         int skip_expired = !server.allow_access_expired;
-        dict *d = o->ptr;
-        dictIterator di;
-        dictInitSafeIterator(&di, d);
+        hashtable *ht = o->ptr;
+        hashtableIterator iter;
+        hashtableInitIterator(&iter, ht, HASHTABLE_ITER_SAFE);
         Entry *batch_entry[HGETALL_BATCH];
         sds batch_val[HGETALL_BATCH];
 
@@ -3208,9 +3232,9 @@ void genericHgetallCommand(client *c, int flags) {
              * dereference Entry here so the prefetch is effective. */
             int batch_count = 0;
             while (batch_count < HGETALL_BATCH) {
-                dictEntry *de = dictNext(&di);
-                if (!de) break;
-                Entry *e = dictGetKey(de);
+                void *entry;
+                if (!hashtableNext(&iter, &entry)) break;
+                Entry *e = (Entry *)entry;
                 batch_entry[batch_count++] = e;
                 redis_prefetch_read(e);
             }
@@ -3250,7 +3274,7 @@ void genericHgetallCommand(client *c, int flags) {
                 }
             }
         }
-        dictResetIterator(&di);
+        hashtableCleanupIterator(&iter);
         goto done;
     }
 
@@ -3388,8 +3412,8 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
             addReplyArrayLen(c, count);
         if (hash->encoding == OBJ_ENCODING_HT) {
             while (count--) {
-                dictEntry *de = dictGetFairRandomKey(hash->ptr);
-                Entry *entry = dictGetKey(de);
+                void *entry;
+                hashtableFairRandomEntry(hash->ptr, &entry);
                 sds fieldStr = entryGetField(entry);
                 if (withvalues && c->resp > 2)
                     addReplyArrayLen(c,2);
@@ -3486,12 +3510,12 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
      * used into CASE 4 is highly inefficient. */
     if (count*HRANDFIELD_SUB_STRATEGY_MUL > size) {
         /* Hashtable encoding (generic implementation) */
-        dict *ht = hash->ptr;
-        dictIterator di;
-        dictEntry *de;
+        hashtable *ht = hash->ptr;
+        hashtableIterator iter;
+        void *entry;
         unsigned long idx = 0;
 
-        /* Allocate a temporary array of pointers to stored key-values in dict and
+        /* Allocate a temporary array of pointers to stored key-values in hashtable and
          * assist it to remove random elements to reach the right count. */
         struct FieldValPair {
             sds field;
@@ -3499,12 +3523,12 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
         } *pairs = zmalloc(sizeof(struct FieldValPair) * size);
 
         /* Add all the elements into the temporary array. */
-        dictInitIterator(&di, ht);
-        while((de = dictNext(&di)) != NULL) {
-            Entry *e = dictGetKey(de);
+        hashtableInitIterator(&iter, ht, 0);
+        while (hashtableNext(&iter, &entry)) {
+            Entry *e = entry;
             pairs[idx++] = (struct FieldValPair) {entryGetField(e), entryGetValue(e)};
         }
-        dictResetIterator(&di);
+        hashtableCleanupIterator(&iter);
 
         /* Remove random elements to reach the right count. */
         while (size > count) {
@@ -3529,32 +3553,31 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
      * to the temporary hash, trying to eventually get enough unique elements
      * to reach the specified count. */
     else {
-        /* Allocate temporary dictUnique to find unique elements. Just keep ref
-         * to key-value from the original hash. This dict relaxes hash function
-         * to be based on field's pointer */
-        dictType uniqueDictType = { .hashFunction =  dictPtrHash };
-        dict *dictUnique = dictCreate(&uniqueDictType);
-        dictExpand(dictUnique, count);
+        /* Allocate temporary hashtable to find unique elements. Just keep ref
+         * to key-value from the original hash. Uses deduplication type (no destructor). */
+        hashtable *htUnique = hashtableCreate(&hashDeduplicationHashtableType);
+        hashtableExpand(htUnique, count);
 
         /* Hashtable encoding (generic implementation) */
         unsigned long added = 0;
 
         while(added < count) {
-            dictEntry *de = dictGetFairRandomKey(hash->ptr);
-            serverAssert(de != NULL);
-            Entry *e = dictGetKey(de);
+            void *entry;
+            hashtableFairRandomEntry(hash->ptr, &entry);
+            serverAssert(entry != NULL);
+            Entry *e = entry;
             sds field = entryGetField(e);
             sds value = entryGetValue(e);
 
-            /* Try to add the object to the dictionary. If it already exists
-            * free it, otherwise increment the number of objects we have
-            * in the result dictionary. */
-            if (dictAdd(dictUnique, field, value) != DICT_OK)
+            /* Try to add the entry to the hashtable. If it already exists
+            * skip it, otherwise increment the number of objects we have
+            * in the result hashtable. */
+            if (!hashtableAdd(htUnique, e))
                 continue;
 
             added++;
 
-            /* We can reply right away, so that we don't need to store the value in the dict. */
+            /* We can reply right away, so that we don't need to store the value in the hashtable. */
             if (withvalues && c->resp > 2)
                 addReplyArrayLen(c,2);
 
@@ -3563,8 +3586,8 @@ void hrandfieldWithCountCommand(client *c, long l, int withvalues) {
                 addReplyBulkCBuffer(c, value, sdslen(value));
         }
 
-        /* Release memory */
-        dictRelease(dictUnique);
+        /* Release hashtable - entries are not freed (no destructor in type) */
+        hashtableRelease(htUnique);
     }
 out:
     if (server.memory_tracking_enabled)
@@ -3662,12 +3685,12 @@ static void hfieldPersist(robj *hashObj, Entry *entry) {
     if (fieldExpireTime == EB_EXPIRE_TIME_INVALID)
         return;
 
-    /* if field is set with expire, then dict must has HFE metadata attached */
-    dict *d = hashObj->ptr;
-    htMetadataEx *dictExpireMeta = htGetMetadataEx(d);
+    /* if field is set with expire, then hashtable must has HFE metadata attached */
+    hashtable *ht = hashObj->ptr;
+    htMetadataEx *htExpireMeta = htGetMetadataSize(ht);
 
     /* Remove field from private HFE DS */
-    ebRemove(&dictExpireMeta->hfe, &hashFieldExpireBucketsType, entry);
+    ebRemove(&htExpireMeta->hfe, &hashFieldExpireBucketsType, entry);
 
     /* Don't have to update global HFE DS. It's unnecessary. Implementing this
      * would introduce significant complexity and overhead for an operation that
@@ -3740,9 +3763,9 @@ ExpireMeta *hashGetExpireMeta(const eItem hash) {
         listpackEx *lpt = hashObj->ptr;
         return &lpt->meta;
     } else if (hashObj->encoding == OBJ_ENCODING_HT) {
-        dict *d = hashObj->ptr;
-        htMetadataEx *dictExpireMeta = htGetMetadataEx(d);
-        return &dictExpireMeta->expireMeta;
+        hashtable *ht = hashObj->ptr;
+        htMetadataEx *htExpireMeta = htGetMetadataSize(ht);
+        return &htExpireMeta->expireMeta;
     } else {
         serverPanic("Unknown encoding: %d", hashObj->encoding);
     }
@@ -3937,7 +3960,7 @@ static void httlGenericCommand(client *c, const char *cmd, long long basetime, i
         }
         return;
     } else if (hashObj->encoding == OBJ_ENCODING_HT) {
-        dict *d = hashObj->ptr;
+        hashtable *ht = hashObj->ptr;
         size_t oldsize = 0;
         if (server.memory_tracking_enabled)
             oldsize = kvobjAllocSize(hashObj);
@@ -3945,13 +3968,12 @@ static void httlGenericCommand(client *c, const char *cmd, long long basetime, i
         addReplyArrayLen(c, numFields);
         for (int i = 0 ; i < numFields ; i++) {
             sds field = c->argv[numFieldsAt+1+i]->ptr;
-            dictEntry *de = dictFind(d, field);
-            if (de == NULL) {
+            void *entry;
+            if (!hashtableFind(ht, field, &entry)) {
                 addReplyLongLong(c, HFE_GET_NO_FIELD);
                 continue;
             }
 
-            Entry *entry = dictGetKey(de);
             uint64_t expire = entryGetExpiry(entry);
             if (expire == EB_EXPIRE_TIME_INVALID) {
                 addReplyLongLong(c, HFE_GET_NO_TTL); /* no ttl */
@@ -4275,7 +4297,7 @@ void hpersistCommand(client *c) {
             vecPush(vpersisted, c->argv[numFieldsAt + 1 + i]);
         }
     } else if (hashObj->encoding == OBJ_ENCODING_HT) {
-        dict *d = hashObj->ptr;
+        hashtable *ht = hashObj->ptr;
         size_t oldsize = 0;
         if (server.memory_tracking_enabled)
             oldsize = kvobjAllocSize(hashObj);
@@ -4283,13 +4305,12 @@ void hpersistCommand(client *c) {
         addReplyArrayLen(c, numFields);
         for (int i = 0 ; i < numFields ; i++) {
             sds field = c->argv[numFieldsAt + 1 + i]->ptr;
-            dictEntry *de = dictFind(d, field);
-            if (de == NULL) {
+            void *entry;
+            if (!hashtableFind(ht, field, &entry)) {
                 addReplyLongLong(c, HFE_PERSIST_NO_FIELD);
                 continue;
             }
 
-            Entry *entry = dictGetKey(de);
             uint64_t expire = entryGetExpiry(entry);
             if (expire == EB_EXPIRE_TIME_INVALID) {
                 addReplyLongLong(c, HFE_PERSIST_NO_TTL);

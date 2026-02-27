@@ -78,7 +78,7 @@ struct RedisModuleSharedAPI {
 typedef struct RedisModuleSharedAPI RedisModuleSharedAPI;
 typedef struct RedisModuleKeyOptCtx RedisModuleKeyOptCtx;
 
-dict *modules; /* Hash table of modules. SDS -> RedisModule ptr.*/
+hashtable *modules; /* Hash table of modules. SDS -> RedisModule ptr.*/
 
 /* Entries in the context->amqueue array, representing objects to free
  * when the callback returns. */
@@ -1351,8 +1351,8 @@ int RM_CreateCommand(RedisModuleCtx *ctx, const char *name, RedisModuleCmdFunc c
     cp->rediscmd->arity = cmdfunc ? -1 : -2; /* Default value, can be changed later via dedicated API */
 
     pauseAllIOThreads();
-    serverAssert(dictAdd(server.commands, sdsdup(declared_name), cp->rediscmd) == DICT_OK);
-    serverAssert(dictAdd(server.orig_commands, sdsdup(declared_name), cp->rediscmd) == DICT_OK);
+    serverAssert(hashtableAdd(server.commands, cp->rediscmd));
+    serverAssert(hashtableAdd(server.orig_commands, cp->rediscmd));
     resumeAllIOThreads();
 
     cp->rediscmd->id = ACLGetCommandID(declared_name); /* ID used for ACL. */
@@ -1493,7 +1493,7 @@ int RM_CreateSubcommand(RedisModuleCommand *parent, const char *name, RedisModul
     RedisModuleCommand *cp = moduleCreateCommandProxy(parent->module, declared_name, fullname, cmdfunc, flags, firstkey, lastkey, keystep);
     cp->rediscmd->arity = -2;
 
-    commandAddSubcommand(parent_cmd, cp->rediscmd, name);
+    commandAddSubcommand(parent_cmd, cp->rediscmd);
     return REDISMODULE_OK;
 }
 
@@ -2322,7 +2322,10 @@ static int moduleConvertArgFlags(int flags) {
 
 /* Return `struct RedisModule *` as `void *` to avoid exposing it outside of module.c. */
 void *moduleGetHandleByName(char *modulename) {
-    return dictFetchValue(modules,modulename);
+    void *module;
+    if (hashtableFind(modules, modulename, &module))
+        return module;
+    return NULL;
 }
 
 /* Returns 1 if `cmd` is a command of the module `modulename`. 0 otherwise. */
@@ -2392,9 +2395,9 @@ void RM_SetModuleAttribs(RedisModuleCtx *ctx, const char *name, int ver, int api
  * Otherwise zero is returned. */
 int RM_IsModuleNameBusy(const char *name) {
     sds modulename = sdsnew(name);
-    dictEntry *de = dictFind(modules,modulename);
+    int exists = hashtableFind(modules, modulename, NULL);
     sdsfree(modulename);
-    return de != NULL;
+    return exists;
 }
 
 /* Return the current UNIX time in milliseconds. */
@@ -4754,7 +4757,7 @@ char *RM_StringDMA(RedisModuleKey *key, size_t *len, int mode) {
     /* For write access, and even for read access if the object is encoded,
      * we unshare the string (that has the side effect of decoding it). */
     if ((mode & REDISMODULE_WRITE) || key->kv->encoding != OBJ_ENCODING_RAW)
-        key->kv = dbUnshareStringValue(key->db, key->key, key->kv);
+        key->kv = dbUnshareStringValue(key->db, key->key, key->kv, NULL);
 
     *len = sdslen(key->kv->ptr);
     return key->kv->ptr;
@@ -4788,7 +4791,7 @@ int RM_StringTruncate(RedisModuleKey *key, size_t newlen) {
         key->kv = o;
     } else {
         /* Unshare and resize. */
-        key->kv = dbUnshareStringValue(key->db, key->key, key->kv);
+        key->kv = dbUnshareStringValue(key->db, key->key, key->kv, NULL);
         size_t oldsize = 0;
         if (server.memory_tracking_enabled)
             oldsize = kvobjAllocSize(key->kv);
@@ -7267,12 +7270,12 @@ uint64_t moduleTypeEncodeId(const char *name, int encver) {
  * a type with the same name as the one given. Returns the moduleType
  * structure pointer if such a module is found, or NULL otherwise. */
 moduleType *moduleTypeLookupModuleByNameInternal(const char *name, int ignore_case) {
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, modules);
-    while ((de = dictNext(&di)) != NULL) {
-        struct RedisModule *module = dictGetVal(de);
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
         listIter li;
         listNode *ln;
 
@@ -7282,12 +7285,12 @@ moduleType *moduleTypeLookupModuleByNameInternal(const char *name, int ignore_ca
             if ((!ignore_case && memcmp(name,mt->entity.name,sizeof(mt->entity.name)) == 0)
                 || (ignore_case && !strcasecmp(name, mt->entity.name)))
             {
-                dictResetIterator(&di);
+                hashtableCleanupIterator(&iter);
                 return mt;
             }
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
     return NULL;
 }
 /* Search all registered modules by name, and name is case sensitive */
@@ -7318,12 +7321,12 @@ moduleType *moduleTypeLookupModuleByID(uint64_t id) {
 
     /* Slow module by module lookup. */
     moduleType *mt = NULL;
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, modules);
-    while ((de = dictNext(&di)) != NULL && mt == NULL) {
-        struct RedisModule *module = dictGetVal(de);
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry) && mt == NULL) {
+        struct RedisModule *module = entry;
         listIter li;
         listNode *ln;
 
@@ -7338,7 +7341,7 @@ moduleType *moduleTypeLookupModuleByID(uint64_t id) {
             }
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 
     /* Add to cache if possible. */
     if (mt && j < MODULE_LOOKUP_CACHE_SIZE) {
@@ -7665,20 +7668,20 @@ void moduleRDBLoadError(RedisModuleIO *io) {
  * REDISMODULE_OPTIONS_HANDLE_IO_ERRORS, in which case diskless loading should
  * be avoided since it could cause data loss. */
 int moduleAllDatatypesHandleErrors(void) {
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, modules);
-    while ((de = dictNext(&di)) != NULL) {
-        struct RedisModule *module = dictGetVal(de);
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
         if (listLength(module->types) &&
             !(module->options & REDISMODULE_OPTIONS_HANDLE_IO_ERRORS))
         {
-            dictResetIterator(&di);
+            hashtableCleanupIterator(&iter);
             return 0;
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
     return 1;
 }
 
@@ -7686,18 +7689,18 @@ int moduleAllDatatypesHandleErrors(void) {
  * diskless async loading should be avoided because module doesn't know there can be traffic during
  * database full resynchronization. */
 int moduleAllModulesHandleReplAsyncLoad(void) {
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, modules);
-    while ((de = dictNext(&di)) != NULL) {
-        struct RedisModule *module = dictGetVal(de);
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
         if (!(module->options & REDISMODULE_OPTIONS_HANDLE_REPL_ASYNC_LOAD)) {
-            dictResetIterator(&di);
+            hashtableCleanupIterator(&iter);
             return 0;
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
     return 1;
 }
 
@@ -7954,12 +7957,12 @@ long double RM_LoadLongDouble(RedisModuleIO *io) {
  * who asked for it. */
 ssize_t rdbSaveModulesAux(rio *rdb, int when) {
     size_t total_written = 0;
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, modules);
-    while ((de = dictNext(&di)) != NULL) {
-        struct RedisModule *module = dictGetVal(de);
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
         listIter li;
         listNode *ln;
 
@@ -7970,14 +7973,14 @@ ssize_t rdbSaveModulesAux(rio *rdb, int when) {
                 continue;
             ssize_t ret = rdbSaveSingleModuleAux(rdb, when, mt);
             if (ret==-1) {
-                dictResetIterator(&di);
+                hashtableCleanupIterator(&iter);
                 return -1;
             }
             total_written += ret;
         }
     }
 
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
     return total_written;
 }
 
@@ -11567,12 +11570,12 @@ int RM_RegisterInfoFunc(RedisModuleCtx *ctx, RedisModuleInfoFunc cb) {
 }
 
 sds modulesCollectInfo(sds info, dict *sections_dict, int for_crash_report, int sections) {
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, modules);
-    while ((de = dictNext(&di)) != NULL) {
-        struct RedisModule *module = dictGetVal(de);
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
         if (!module->info_cb)
             continue;
         RedisModuleInfoCtx info_ctx = {module, sections_dict, info, sections, 0, 0};
@@ -11583,7 +11586,7 @@ sds modulesCollectInfo(sds info, dict *sections_dict, int for_crash_report, int 
         info = info_ctx.info;
         sections = info_ctx.sections;
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
     return info;
 }
 
@@ -12145,10 +12148,9 @@ typedef struct RedisModuleScanCursor{
     int done;
 }RedisModuleScanCursor;
 
-static void moduleScanCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
-    UNUSED(plink);
+static void moduleScanCallback(void *privdata, void *entry) {
     ScanCBData *data = privdata;
-    kvobj *keyvalObj = dictGetKey(de);
+    kvobj *keyvalObj = entry;
     sds key = kvobjGetKey(keyvalObj);
     RedisModuleString *keyname = createObject(OBJ_STRING,sdsdup(key));
 
@@ -12260,18 +12262,17 @@ typedef struct {
     RedisModuleScanKeyCB fn;
 } ScanKeyCBData;
 
-static void moduleScanKeyCallback(void *privdata, const dictEntry *de, dictEntryLink plink) {
-    UNUSED(plink);
+static void moduleScanKeyCallback(void *privdata, void *entry) {
     ScanKeyCBData *data = privdata;
-    sds key = dictGetKey(de);
     kvobj *kv = data->key->kv;
     robj *field = NULL;
     robj *value = NULL;
     if (kv->type == OBJ_SET) {
+        sds key = entry;
         field = createStringObject(key, sdslen(key));
         value = NULL;
     } else if (kv->type == OBJ_HASH) {
-        Entry *e = (Entry *) key;
+        Entry *e = entry;
 
         /* If field is expired and not indicated to access expired, then ignore */
         if ((!(data->key->mode & REDISMODULE_OPEN_KEY_ACCESS_EXPIRED)) &&
@@ -12285,7 +12286,7 @@ static void moduleScanKeyCallback(void *privdata, const dictEntry *de, dictEntry
         field = createStringObject(fieldStr, sdslen(fieldStr));
         value = createStringObject(val, sdslen(val));
     } else if (kv->type == OBJ_ZSET) {
-        zskiplistNode *znode = (zskiplistNode *) key;
+        zskiplistNode *znode = entry;
         sds fieldStr = zslGetNodeElement(znode);
         field = createStringObject(fieldStr, sdslen(fieldStr));
         value = createStringObjectFromLongDouble(znode->score, 0);
@@ -12350,7 +12351,7 @@ int RM_ScanKey(RedisModuleKey *key, RedisModuleScanCursor *cursor, RedisModuleSc
         errno = EINVAL;
         return 0;
     }
-    dict *ht = NULL;
+    hashtable *ht = NULL;
     kvobj *kv = key->kv;
     if (kv->type == OBJ_SET) {
         if (kv->encoding == OBJ_ENCODING_HT)
@@ -12360,7 +12361,7 @@ int RM_ScanKey(RedisModuleKey *key, RedisModuleScanCursor *cursor, RedisModuleSc
             ht = kv->ptr;
     } else if (kv->type == OBJ_ZSET) {
         if (kv->encoding == OBJ_ENCODING_SKIPLIST)
-            ht = ((zset *)kv->ptr)->dict;
+            ht = ((zset *)kv->ptr)->ht;
     } else {
         errno = EINVAL;
         return 0;
@@ -12372,7 +12373,7 @@ int RM_ScanKey(RedisModuleKey *key, RedisModuleScanCursor *cursor, RedisModuleSc
     int ret = 1;
     if (ht) {
         ScanKeyCBData data = { key, privdata, fn };
-        cursor->cursor = dictScan(ht, cursor->cursor, moduleScanKeyCallback, &data);
+        cursor->cursor = hashtableScan(ht, cursor->cursor, moduleScanKeyCallback, &data);
         if (cursor->cursor == 0) {
             cursor->done = 1;
             ret = 0;
@@ -13276,7 +13277,7 @@ void moduleInitModulesSystem(void) {
     server.loadmodule_queue = listCreate();
     server.module_configs_queue = dictCreate(&sdsKeyValueHashDictType);
     server.module_gil_acquring = 0;
-    modules = dictCreate(&modulesDictType);
+    modules = hashtableCreate(&modulesHashtableType);
     moduleAuthCallbacks = listCreate();
 
     /* Set up the keyspace notification subscriber list and static client */
@@ -13490,20 +13491,20 @@ int moduleFreeCommand(struct RedisModule *module, struct redisCommand *cmd) {
     zfree(cp);
 
     if (cmd->subcommands_dict) {
-        dictEntry *de;
-        dictIterator di;
-        dictInitSafeIterator(&di, cmd->subcommands_dict);
-        while ((de = dictNext(&di)) != NULL) {
-            struct redisCommand *sub = dictGetVal(de);
+        hashtableIterator iter;
+        void *entry;
+        hashtableInitIterator(&iter, cmd->subcommands_dict, HASHTABLE_ITER_SAFE);
+        while (hashtableNext(&iter, &entry)) {
+            struct redisCommand *sub = entry;
             if (moduleFreeCommand(module, sub) != C_OK) continue;
 
-            serverAssert(dictDelete(cmd->subcommands_dict, sub->declared_name) == DICT_OK);
+            serverAssert(hashtableDelete(cmd->subcommands_dict, sub->declared_name));
             sdsfree((sds)sub->declared_name);
             sdsfree(sub->fullname);
             zfree(sub);
         }
-        dictResetIterator(&di);
-        dictRelease(cmd->subcommands_dict);
+        hashtableCleanupIterator(&iter);
+        hashtableRelease(cmd->subcommands_dict);
     }
 
     return C_OK;
@@ -13512,20 +13513,20 @@ int moduleFreeCommand(struct RedisModule *module, struct redisCommand *cmd) {
 void moduleUnregisterCommands(struct RedisModule *module) {
     pauseAllIOThreads();
     /* Unregister all the commands registered by this module. */
-    dictIterator di;
-    dictEntry *de;
-    dictInitSafeIterator(&di, server.commands);
-    while ((de = dictNext(&di)) != NULL) {
-        struct redisCommand *cmd = dictGetVal(de);
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, server.commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        struct redisCommand *cmd = entry;
         if (moduleFreeCommand(module, cmd) != C_OK) continue;
 
-        serverAssert(dictDelete(server.commands, cmd->fullname) == DICT_OK);
-        serverAssert(dictDelete(server.orig_commands, cmd->fullname) == DICT_OK);
+        serverAssert(hashtableDelete(server.commands, cmd->fullname));
+        serverAssert(hashtableDelete(server.orig_commands, cmd->fullname));
         sdsfree((sds)cmd->declared_name);
         sdsfree(cmd->fullname);
         zfree(cmd);
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
     resumeAllIOThreads();
 }
 
@@ -13635,7 +13636,7 @@ int moduleOnLoad(int (*onload)(void *, void **, int), const char *path, void *ha
     }
 
     /* Redis module loaded! Register it. */
-    dictAdd(modules,ctx.module->name,ctx.module);
+    hashtableAdd(modules, ctx.module);
     ctx.module->blocked_clients = 0;
     ctx.module->handle = handle;
     ctx.module->loadmod = zmalloc(sizeof(struct moduleLoadQueueEntry));
@@ -13688,7 +13689,8 @@ int moduleOnLoad(int (*onload)(void *, void **, int), const char *path, void *ha
  * if it is certain that it has not yet been in use (e.g., immediate
  * unload on failed load). */
 int moduleUnload(sds name, const char **errmsg, int forced_unload) {
-    struct RedisModule *module = dictFetchValue(modules,name);
+    void *entry;
+    struct RedisModule *module = hashtableFind(modules, name, &entry) ? entry : NULL;
 
     if (module == NULL) {
         *errmsg = "no such module with that name";
@@ -13747,8 +13749,9 @@ int moduleUnload(sds name, const char **errmsg, int forced_unload) {
 
     /* Remove from list of modules. */
     serverLog(LL_NOTICE,"Module %s unloaded",module->name);
-    dictDelete(modules,module->name);
-    module->name = NULL; /* The name was already freed by dictDelete(). */
+    hashtablePop(modules, module->name, NULL);  /* Pop without freeing - we own the name */
+    sdsfree(module->name);
+    module->name = NULL;
     moduleFreeModuleStructure(module);
 
     /* Recompute command bits for all users once the modules has been completely unloaded. */
@@ -13772,19 +13775,19 @@ void modulePipeReadable(aeEventLoop *el, int fd, void *privdata, int mask) {
 /* Helper function for the MODULE and HELLO command: send the list of the
  * loaded modules to the client. */
 void addReplyLoadedModules(client *c) {
-    const long ln = dictSize(modules);
+    const long ln = hashtableSize(modules);
     /* In case no module is load we avoid iterator creation */
     addReplyArrayLen(c,ln);
     if (ln == 0) {
         return;
     }
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, modules);
-    while ((de = dictNext(&di)) != NULL) {
-        sds name = dictGetKey(de);
-        struct RedisModule *module = dictGetVal(de);
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
+        sds name = module->name;
         sds path = module->loadmod->path;
         addReplyMapLen(c,4);
         addReplyBulkCString(c,"name");
@@ -13799,7 +13802,7 @@ void addReplyLoadedModules(client *c) {
             addReplyBulk(c,module->loadmod->argv[i]);
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 }
 
 /* Helper for genModulesInfoString(): given a list of modules, return
@@ -13840,13 +13843,13 @@ sds genModulesInfoStringRenderModuleOptions(struct RedisModule *module) {
  * After the call, the passed sds info string is no longer valid and all the
  * references must be substituted with the new pointer returned by the call. */
 sds genModulesInfoString(sds info) {
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, modules);
-    while ((de = dictNext(&di)) != NULL) {
-        sds name = dictGetKey(de);
-        struct RedisModule *module = dictGetVal(de);
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
+        sds name = module->name;
 
         sds usedby = genModulesInfoStringRenderModulesList(module->usedby);
         sds using = genModulesInfoStringRenderModulesList(module->using);
@@ -13860,7 +13863,7 @@ sds genModulesInfoString(sds info) {
         sdsfree(using);
         sdsfree(options);
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
     return info;
 }
 
@@ -14999,7 +15002,7 @@ NULL
 
 /* Return the number of registered modules. */
 size_t moduleCount(void) {
-    return dictSize(modules);
+    return hashtableSize(modules);
 }
 
 /* --------------------------------------------------------------------------
@@ -15561,22 +15564,32 @@ int moduleDefragValue(robj *key, robj *value, int dbid) {
 
 /* Call registered module API defrag start functions */
 void moduleDefragStart(void) {
-    dictForEach(modules, struct RedisModule, module, 
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
         if (module->defrag_start_cb) {
             RedisModuleDefragCtx defrag_ctx = INIT_MODULE_DEFRAG_CTX(0, NULL, NULL, -1);
             module->defrag_start_cb(&defrag_ctx);
         }
-    );
+    }
+    hashtableCleanupIterator(&iter);
 }
 
 /* Call registered module API defrag end functions */
 void moduleDefragEnd(void) {
-    dictForEach(modules, struct RedisModule, module, 
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
         if (module->defrag_end_cb) {
             RedisModuleDefragCtx defrag_ctx = INIT_MODULE_DEFRAG_CTX(0, NULL, NULL, -1);
             module->defrag_end_cb(&defrag_ctx);
         }
-    );
+    }
+    hashtableCleanupIterator(&iter);
 }
 
 /* Returns the name of the key currently being processed.

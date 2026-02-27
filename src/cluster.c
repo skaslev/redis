@@ -1093,12 +1093,12 @@ void clusterCommand(client *c) {
         unsigned int numkeys = maxkeys > keys_in_slot ? keys_in_slot : maxkeys;
         addReplyArrayLen(c,numkeys);
         kvstoreDictIterator kvs_di;
-        dictEntry *de = NULL;
+        kvobj *kv = NULL;
         kvstoreInitDictIterator(&kvs_di, server.db->keys, slot);
         for (unsigned int i = 0; i < numkeys; i++) {
-            de = kvstoreDictIteratorNext(&kvs_di);
-            serverAssert(de != NULL);
-            sds sdskey = kvobjGetKey(dictGetKV(de));
+            kv = kvstoreDictIteratorNext(&kvs_di);
+            serverAssert(kv != NULL);
+            sds sdskey = kvobjGetKey(kv);
             addReplyBulkCBuffer(c, sdskey, sdslen(sdskey));
         }
         kvstoreResetDictIterator(&kvs_di);
@@ -1725,11 +1725,11 @@ unsigned int clusterDelKeysInSlot(unsigned int hashslot, int by_command) {
         return 0;
 
     kvstoreDictIterator kvs_di;
-    dictEntry *de = NULL;
+    kvobj *kv = NULL;
     kvstoreInitDictSafeIterator(&kvs_di, server.db->keys, (int) hashslot);
-    while((de = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
+    while((kv = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
         enterExecutionUnit(1, 0);
-        sds sdskey = kvobjGetKey(dictGetKV(de));
+        sds sdskey = kvobjGetKey(kv);
         robj *key = createStringObject(sdskey, sdslen(sdskey));
         dbDelete(&server.db[0], key);
 

@@ -204,12 +204,12 @@ void xorObjectDigest(redisDb *db, robj *keyobj, unsigned char *digest, robj *o) 
             }
         } else if (o->encoding == OBJ_ENCODING_SKIPLIST) {
             zset *zs = o->ptr;
-            dictIterator di;
-            dictEntry *de;
+            hashtableIterator hi;
+            void *entry;
 
-            dictInitIterator(&di, zs->dict);
-            while((de = dictNext(&di)) != NULL) {
-                zskiplistNode *znode = dictGetKey(de);
+            hashtableInitIterator(&hi, zs->ht, 0);
+            while (hashtableNext(&hi, &entry)) {
+                zskiplistNode *znode = entry;
                 sds sdsele = zslGetNodeElement(znode);
                 const int len = fpconv_dtoa(znode->score, buf);
                 buf[len] = '\0';
@@ -218,7 +218,7 @@ void xorObjectDigest(redisDb *db, robj *keyobj, unsigned char *digest, robj *o) 
                 mixDigest(eledigest,buf,strlen(buf));
                 xorDigest(digest,eledigest,20);
             }
-            dictResetIterator(&di);
+            hashtableCleanupIterator(&hi);
         } else {
             serverPanic("Unknown sorted set encoding");
         }
@@ -308,7 +308,6 @@ void xorObjectDigest(redisDb *db, robj *keyobj, unsigned char *digest, robj *o) 
  * a different digest. */
 void computeDatasetDigest(unsigned char *final) {
     unsigned char digest[20];
-    dictEntry *de;
     int j;
     uint32_t aux;
 
@@ -326,11 +325,11 @@ void computeDatasetDigest(unsigned char *final) {
         /* Iterate this DB writing every entry */
         kvstoreIterator kvs_it;
         kvstoreIteratorInit(&kvs_it, db->keys);
-        while((de = kvstoreIteratorNext(&kvs_it)) != NULL) {
+        kvobj *kv;
+        while((kv = kvstoreIteratorNext(&kvs_it)) != NULL) {
             robj *keyobj;
 
             memset(digest,0,20); /* This key-val digest */
-            kvobj *kv = dictGetKV(de);
             sds key = kvobjGetKey(kv);
             keyobj = createStringObject(key,sdslen(key));
 
@@ -1031,7 +1030,7 @@ NULL
         sdsfree(stats);
     } else if (!strcasecmp(c->argv[1]->ptr,"htstats-key") && c->argc >= 3) {
         kvobj *o;
-        dict *ht = NULL;
+        hashtable *ht = NULL;
         int full = 0;
 
         if (c->argc >= 4 && !strcasecmp(c->argv[3]->ptr,"full"))
@@ -1045,7 +1044,7 @@ NULL
         case OBJ_ENCODING_SKIPLIST:
             {
                 zset *zs = o->ptr;
-                ht = zs->dict;
+                ht = zs->ht;
             }
             break;
         case OBJ_ENCODING_HT:
@@ -1058,7 +1057,7 @@ NULL
                             "represented using an hash table");
         } else {
             char buf[4096];
-            dictGetStats(buf,sizeof(buf),ht,full);
+            hashtableGetStats(buf, sizeof(buf), ht, full);
             addReplyVerbatim(c,buf,strlen(buf),"txt");
         }
     } else if (!strcasecmp(c->argv[1]->ptr,"change-repl-id") && c->argc == 2) {
@@ -1149,6 +1148,8 @@ NULL
         addReply(c, shared.ok);
     } else if (!strcasecmp(c->argv[1]->ptr, "dict-resizing") && c->argc == 3) {
         server.dict_resizing = atoi(c->argv[2]->ptr);
+        /* Also set hashtable resize policy */
+        hashtableSetResizePolicy(server.dict_resizing ? HASHTABLE_RESIZE_ALLOW : HASHTABLE_RESIZE_FORBID);
         addReply(c, shared.ok);
     } else if (!strcasecmp(c->argv[1]->ptr,"script") && c->argc == 3) {
         if (server.hide_user_data_from_log) {

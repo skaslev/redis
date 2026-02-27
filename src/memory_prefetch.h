@@ -18,7 +18,7 @@
 #include <stddef.h>
 
 struct client;
-struct dict;
+struct hashtable;
 
 /* Cross-command batch prefetching */
 void prefetchCommandsBatchInit(void);
@@ -27,14 +27,12 @@ int addCommandToBatch(struct client *c);
 void resetCommandsBatch(void);
 void prefetchCommands(void);
 
-/* Intra-command prefetch: prefetch dict lookup data for an array of keys.
- * Reuses the same state machine as the cross-command path. The dict's
- * dictType drives any key/value payload prefetching via the
- * prefetchEntryKey / prefetchEntryValue callbacks.
+/* Intra-command prefetch: prefetch hashtable lookup data for an array of keys.
+ * Reuses the same incremental-find state machine as the cross-command path.
  *
- * nkeys must be <= DICT_PREFETCH_MAX_SIZE (the function asserts this).
+ * nkeys must be <= HASHTABLE_PREFETCH_MAX_SIZE (the function asserts this).
  * Callers should batch larger inputs into chunks of this size or smaller. */
-#define DICT_PREFETCH_MAX_SIZE 64
-void dictPrefetchKeys(struct dict **dicts, void **keys, size_t nkeys);
+#define HASHTABLE_PREFETCH_MAX_SIZE 64
+void hashtablePrefetchKeys(struct hashtable **hts, void **keys, size_t nkeys);
 
 #endif /* MEMORY_PREFETCH_H */

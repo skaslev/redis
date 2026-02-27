@@ -133,7 +133,7 @@ void evictionPoolAlloc(void) {
  * right. */
 int evictionPoolPopulate(redisDb *db, kvstore *samplekvs, struct evictionPoolEntry *pool) {
     int j, k, count;
-    dictEntry *samples[server.maxmemory_samples];
+    void *samples[server.maxmemory_samples];
 
     /* Don't retry, since we will call evictionPoolPopulate multiple times if needed. */
     int slot = kvstoreGetFairRandomDictIndex(samplekvs, randomEvictionShouldSkipDictIndex, 1, 0);
@@ -141,9 +141,8 @@ int evictionPoolPopulate(redisDb *db, kvstore *samplekvs, struct evictionPoolEnt
     count = kvstoreDictGetSomeKeys(samplekvs,slot,samples,server.maxmemory_samples);
     for (j = 0; j < count; j++) {
         unsigned long long idle;
-        
-        dictEntry *de = samples[j];
-        kvobj *kv = dictGetKV(de);
+
+        kvobj *kv = samples[j];
         sds key = kvobjGetKey(kv);
         
         /* Calculate the idle time according to the policy. This is called
@@ -570,7 +569,6 @@ int performEvictions(void) {
         sds bestkey = NULL;
         int bestdbid;
         redisDb *db;
-        dictEntry *de;
 
         if (server.maxmemory_policy & (MAXMEMORY_FLAG_LRU|MAXMEMORY_FLAG_LFU|MAXMEMORY_FLAG_LRM) ||
             server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL)
@@ -628,7 +626,8 @@ int performEvictions(void) {
                     } else {
                         kvs = server.db[bestdbid].expires;
                     }
-                    de = kvstoreDictFind(kvs, pool[k].slot, pool[k].key);
+                    void *entry;
+                    int found = kvstoreDictFind(kvs, pool[k].slot, pool[k].key, &entry);
 
                     /* Remove the entry from the pool. */
                     if (pool[k].key != pool[k].cached)
@@ -638,8 +637,8 @@ int performEvictions(void) {
 
                     /* If the key exists, is our pick. Otherwise it is
                      * a ghost and we need to try the next element. */
-                    if (de) {
-                        bestkey = kvobjGetKey(dictGetKV(de));
+                    if (found) {
+                        bestkey = kvobjGetKey(entry);
                         break;
                     } else {
                         /* Ghost... Iterate again. */
@@ -666,9 +665,9 @@ int performEvictions(void) {
                 }
                 int slot = kvstoreGetFairRandomDictIndex(kvs, randomEvictionShouldSkipDictIndex, 16, 0);
                 if (slot == -1) continue;
-                de = kvstoreDictGetRandomKey(kvs, slot);
-                if (de) {
-                    kvobj *kv = dictGetKV(de);
+                void *entry;
+                if (kvstoreDictGetRandomKey(kvs, slot, &entry)) {
+                    kvobj *kv = entry;
                     bestkey = kvobjGetKey(kv);
                     bestdbid = j;
                     break;

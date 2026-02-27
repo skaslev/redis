@@ -2326,7 +2326,7 @@ static int propagateModuleCommands(asmTask *task, rio *rdb) {
 int slotSnapshotSaveRio(int req, rio *rdb, int *error) {
     serverAssert(req & SLAVE_REQ_SLOTS_SNAPSHOT);
 
-    dictEntry *de;
+    kvobj *kv;
     kvstoreDictIterator kvs_di;
 
     if (unlikely(asmDebugIsFailPointActive(ASM_MIGRATE_RDB_CHANNEL, ASM_SEND_BULK_AND_STREAM)))
@@ -2377,7 +2377,7 @@ int slotSnapshotSaveRio(int req, rio *rdb, int *error) {
                 int send_slot_info = 0;
 
                 kvstoreInitDictIterator(&kvs_di, server.db->keys, k);
-                while ((de = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
+                while ((kv = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
                     /* Send slot info before the first key in the slot */
                     if (!send_slot_info) {
                         /* Format slot info */
@@ -2398,8 +2398,7 @@ int slotSnapshotSaveRio(int req, rio *rdb, int *error) {
                     }
 
                     /* Save a key-value pair */
-                    kvobj *o = dictGetKV(de);
-                    if (slotSnapshotSaveKeyValuePair(rdb, o, db->id) == C_ERR) goto werr2;
+                    if (slotSnapshotSaveKeyValuePair(rdb, kv, db->id) == C_ERR) goto werr2;
 
                     /* Delay return if required (for testing) */
                     if (unlikely(server.rdb_key_save_delay)) {
@@ -3040,10 +3039,10 @@ void asmTriggerBackgroundTrim(asmTrimCtx *trim_ctx, int migration_cleanup) {
 
     /* Create temporary kvstores to hold the slot data we're about to move.
      * These will be deleted in the BIO thread. */
-    kvstore *keys = kvstoreCreate(&kvstoreBaseType, &dbDictType,
+    kvstore *keys = kvstoreCreate(&kvstoreBaseType, &dbHashtableType,
                                   CLUSTER_SLOT_MASK_BITS,
                                   KVSTORE_ALLOCATE_DICTS_ON_DEMAND);
-    kvstore *expires = kvstoreCreate(&kvstoreBaseType, &dbExpiresDictType,
+    kvstore *expires = kvstoreCreate(&kvstoreBaseType, &dbExpiresHashtableType,
                                      CLUSTER_SLOT_MASK_BITS,
                                      KVSTORE_ALLOCATE_DICTS_ON_DEMAND);
     estore *subexpires = estoreCreate(&subexpiresBucketsType, CLUSTER_SLOT_MASK_BITS);
@@ -3717,11 +3716,10 @@ void asmActiveTrimCycle(void) {
     int slot = slotRangeArrayGetCurrentSlot(asmManager->active_trim_it);
 
     while (!time_exceeded && slot != -1) {
-        dictEntry *de;
+        kvobj *kv;
         kvstoreDictIterator kvs_di;
         kvstoreInitDictSafeIterator(&kvs_di, server.db[0].keys, slot);
-        while ((de = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
-            kvobj *kv = dictGetKV(de);
+        while ((kv = kvstoreDictIteratorNext(&kvs_di)) != NULL) {
             sds sdskey = kvobjGetKey(kv);
 
             enterExecutionUnit(1, 0);

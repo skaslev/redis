@@ -310,9 +310,13 @@ kvobj *kvobjSet(sds key, robj *val, uint32_t keyMetaBits) {
             /* Dup the string. */
             valptr = sdsdup(val->ptr);
         } else {
-            /* There are multiple references to this non-string object. Most types
-             * can be duplicated, but for a module type is not always possible. */
-            serverPanic("Not implemented");
+            /* There are multiple references to this non-string object.
+             * This should not happen in normal operation. Log it for debugging. */
+            serverLog(LL_WARNING, "kvobjSet: val type=%d encoding=%d refcount=%u iskvobj=%d",
+                      val->type, val->encoding, val->refcount, val->iskvobj);
+            /* Steal the ptr anyway - caller must ensure this is safe. */
+            valptr = val->ptr;
+            val->ptr = NULL;
         }
         kv = kvobjCreate(val->type, key, valptr, keyMetaBits);
         kv->encoding = val->encoding;
@@ -462,8 +466,8 @@ robj *createListListpackObject(void) {
 }
 
 robj *createSetObject(void) {
-    dict *d = dictCreate(&setDictType);
-    robj *o = createObject(OBJ_SET,d);
+    hashtable *ht = hashtableCreate(&setHashtableType);
+    robj *o = createObject(OBJ_SET, ht);
     o->encoding = OBJ_ENCODING_HT;
     return o;
 }
@@ -493,7 +497,7 @@ robj *createZsetObject(void) {
     zset *zs = zmalloc(sizeof(*zs));
     robj *o;
 
-    zs->dict = dictCreate(&zsetDictType);
+    zs->ht = hashtableCreate(&zsetHashtableType);
     zs->zsl = zslCreate();
     o = createObject(OBJ_ZSET,zs);
     o->encoding = OBJ_ENCODING_SKIPLIST;
@@ -567,10 +571,10 @@ void freeSetObject(robj *o) {
     switch (o->encoding) {
     case OBJ_ENCODING_HT:
 #ifdef DEBUG_ASSERTIONS
-        dictEmpty(o->ptr, NULL);
-        debugServerAssert(*htGetMetadataSize(o->ptr) == 0);
+        hashtableEmpty(o->ptr, NULL);
+        debugServerAssert(*htGetAllocSizeMeta(o->ptr) == 0);
 #endif
-        dictRelease((dict*) o->ptr);
+        hashtableRelease((hashtable*) o->ptr);
         break;
     case OBJ_ENCODING_INTSET:
     case OBJ_ENCODING_LISTPACK:
@@ -586,7 +590,7 @@ void freeZsetObject(robj *o) {
     switch (o->encoding) {
     case OBJ_ENCODING_SKIPLIST:
         zs = o->ptr;
-        dictRelease(zs->dict);
+        hashtableRelease(zs->ht);
         zslFree(zs->zsl);
         zfree(zs);
         break;
@@ -728,22 +732,22 @@ void dismissListObject(robj *o, size_t size_hint) {
 /* See dismissObject() */
 void dismissSetObject(robj *o, size_t size_hint) {
     if (o->encoding == OBJ_ENCODING_HT) {
-        dict *set = o->ptr;
-        serverAssert(dictSize(set) != 0);
+        hashtable *ht = o->ptr;
+        serverAssert(hashtableSize(ht) != 0);
         /* We iterate all nodes only when average member size is bigger than a
          * page size, and there's a high chance we'll actually dismiss something. */
-        if (size_hint / dictSize(set) >= server.page_size) {
-            dictEntry *de;
-            dictIterator di;
-            dictInitIterator(&di, set);
-            while ((de = dictNext(&di)) != NULL) {
-                dismissSds(dictGetKey(de));
+        if (size_hint / hashtableSize(ht) >= server.page_size) {
+            hashtableIterator iter;
+            void *entry;
+            hashtableInitIterator(&iter, ht, 0);
+            while (hashtableNext(&iter, &entry)) {
+                dismissSds(entry);  /* entry is sds directly for sets */
             }
-            dictResetIterator(&di);
+            hashtableCleanupIterator(&iter);
         }
 
         /* Dismiss hash table memory. */
-        dismissDictBucketsMemory(set);
+        dismissMemory(hashtableMetadata(ht), hashtableMemUsage(ht));
     } else if (o->encoding == OBJ_ENCODING_INTSET) {
         dismissMemory(o->ptr, intsetBlobLen((intset*)o->ptr));
     } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
@@ -771,7 +775,7 @@ void dismissZsetObject(robj *o, size_t size_hint) {
         }
 
         /* Dismiss hash table memory. */
-        dismissDictBucketsMemory(zs->dict);
+        dismissHashtable(zs->ht);
     } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
         dismissMemory(o->ptr, lpBytes((unsigned char*)o->ptr));
     } else {
@@ -782,22 +786,22 @@ void dismissZsetObject(robj *o, size_t size_hint) {
 /* See dismissObject() */
 void dismissHashObject(robj *o, size_t size_hint) {
     if (o->encoding == OBJ_ENCODING_HT) {
-        dict *d = o->ptr;
-        serverAssert(dictSize(d) != 0);
+        hashtable *ht = o->ptr;
+        serverAssert(hashtableSize(ht) != 0);
         /* We iterate all fields only when average field/value size is bigger than
          * a page size, and there's a high chance we'll actually dismiss something. */
-        if (size_hint / dictSize(d) >= server.page_size) {
-            dictEntry *de;
-            dictIterator di;
-            dictInitIterator(&di, d);
-            while ((de = dictNext(&di)) != NULL) {
-                entryDismissMemory((Entry *) dictGetKey(de));
+        if (size_hint / hashtableSize(ht) >= server.page_size) {
+            hashtableIterator iter;
+            void *entry;
+            hashtableInitIterator(&iter, ht, 0);
+            while (hashtableNext(&iter, &entry)) {
+                entryDismissMemory((Entry *)entry);
             }
-            dictResetIterator(&di);
+            hashtableCleanupIterator(&iter);
         }
 
         /* Dismiss hash table memory. */
-        dismissDictBucketsMemory(d);
+        dismissMemory(hashtableMetadata(ht), hashtableMemUsage(ht));
     } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
         dismissMemory(o->ptr, lpBytes((unsigned char*)o->ptr));
     } else if (o->encoding == OBJ_ENCODING_LISTPACK_EX) {

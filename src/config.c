@@ -542,26 +542,20 @@ void loadServerConfigFromString(char *config) {
         if (!strcasecmp(argv[0],"include") && argc == 2) {
             loadServerConfig(argv[1], 0, NULL);
         } else if (!strcasecmp(argv[0],"rename-command") && argc == 3) {
-            struct redisCommand *cmd = lookupCommandBySds(argv[1]);
-            int retval;
-
-            if (!cmd) {
+            void *popped;
+            if (!hashtablePop(server.commands, argv[1], &popped)) {
                 err = "No such command in rename-command";
                 goto loaderr;
             }
-
-            /* If the target command name is the empty string we just
-             * remove it from the command table. */
-            retval = dictDelete(server.commands, argv[1]);
-            serverAssert(retval == DICT_OK);
+            struct redisCommand *cmd = popped;
 
             /* Otherwise we re-add the command under a different name. */
             if (sdslen(argv[2]) != 0) {
-                sds copy = sdsdup(argv[2]);
+                /* Update the command's fullname to the new name */
+                sdsfree(cmd->fullname);
+                cmd->fullname = sdsdup(argv[2]);
 
-                retval = dictAdd(server.commands, copy, cmd);
-                if (retval != DICT_OK) {
-                    sdsfree(copy);
+                if (!hashtableAdd(server.commands, cmd)) {
                     err = "Target command name already exists"; goto loaderr;
                 }
             }
@@ -1582,11 +1576,11 @@ void rewriteConfigBindOption(standardConfig *config, const char *name, struct re
 /* Rewrite the loadmodule option. */
 void rewriteConfigLoadmoduleOption(struct rewriteConfigState *state) {
     sds line;
-    dictIterator di;
-    dictEntry *de;
-    dictInitIterator(&di, modules);
-    while ((de = dictNext(&di)) != NULL) {
-        struct RedisModule *module = dictGetVal(de);
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, modules, 0);
+    while (hashtableNext(&iter, &entry)) {
+        struct RedisModule *module = entry;
         /* Internal modules doesn't have path and are not part of the configuration file */
         if (sdslen(module->loadmod->path) == 0) continue;
 
@@ -1598,7 +1592,7 @@ void rewriteConfigLoadmoduleOption(struct rewriteConfigState *state) {
         }
         rewriteConfigRewriteLine(state,"loadmodule",line,1);
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
     /* Mark "loadmodule" as processed in case modules is empty. */
     rewriteConfigMarkAsProcessed(state,"loadmodule");
 }

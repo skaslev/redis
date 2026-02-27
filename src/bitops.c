@@ -784,19 +784,19 @@ int getBitfieldTypeFromArgument(client *c, robj *o, int *sign, int *bits) {
 static kvobj *lookupStringForBitCommand(client *c, uint64_t maxbit, 
                                        size_t *strOldSize, size_t *strGrowSize) 
 {
-    dictEntryLink link;
+    hashtablePosition pos;
     size_t byte = maxbit >> 3;
     size_t oldAllocSize = 0;
-    kvobj *o = lookupKeyWriteWithLink(c->db,c->argv[1],&link);
+    kvobj *o = lookupKeyWriteWithPosition(c->db,c->argv[1],&pos);
     if (checkType(c,o,OBJ_STRING)) return NULL;
 
     if (o == NULL) {
         o = createObject(OBJ_STRING,sdsnewlen(NULL, byte+1));
-        dbAddByLink(c->db,c->argv[1],&o,&link);
+        dbAddByPosition(c->db,c->argv[1],&o,&pos);
         *strGrowSize = byte + 1;
         *strOldSize = 0;
     } else {
-        o = dbUnshareStringValue(c->db,c->argv[1],o);
+        o = dbUnshareStringValue(c->db,c->argv[1],o,NULL);
         *strOldSize  = sdslen(o->ptr);
         if (server.memory_tracking_enabled)
             oldAllocSize = kvobjAllocSize(o);

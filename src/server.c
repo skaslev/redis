@@ -33,6 +33,7 @@
 #include "estore.h"
 #include "chk.h"
 #include "fast_float_strtod.h"
+#include "hashtable.h"
 
 #include <time.h>
 #include <signal.h>
@@ -309,15 +310,9 @@ void dictListDestructor(dict *d, void *val)
     listRelease((list*)val);
 }
 
-void dictDictDestructor(dict *d, void *val)
-{
+void dictHashtableDestructor(dict *d, void *val) {
     UNUSED(d);
-    dictRelease((dict*)val);
-}
-
-size_t dictSdsKeyLen(dict *d, const void *key) {
-    UNUSED(d);
-    return sdslen((sds)key);
+    hashtableRelease((hashtable *)val);
 }
 
 static const void *kvGetKey(const void *kv) {
@@ -325,27 +320,22 @@ static const void *kvGetKey(const void *kv) {
     return sdsKey;
 }
 
-int dictSdsCompareKV(dictCmpCache *cache, const void *sdsKey1, const void *sdsKey2)
-{
-    /* is first cmp call of a new lookup */
-    if (cache->useCache == 0) {
-        cache->useCache = 1;
-        cache->data[0].sz = sdslen((sds) sdsKey1);
-    }
-
-    size_t l1 = cache->data[0].sz;
-    size_t l2 = sdslen((sds)sdsKey2);
-    if (l1 != l2) return 0;
-    return memcmp(sdsKey1, sdsKey2, l1) == 0;
+/* Hashtable callback: compare two SDS keys. Returns 0 if equal. */
+static int htSdsKeyCompare(const void *key1, const void *key2) {
+    size_t l1 = sdslen((sds)key1);
+    size_t l2 = sdslen((sds)key2);
+    if (l1 != l2) return 1;
+    return memcmp(key1, key2, l1);
 }
 
-static void dictDestructorKV(dict *d, void *key) {
-    kvobj *kv = (kvobj *)key;
+/* Hashtable callback: destructor for kvobj entries in db->keys */
+static void htKvobjDestructor(hashtable *ht, void *entry) {
+    kvobj *kv = (kvobj *)entry;
     if (kv == NULL) return;
     if (server.memory_tracking_enabled) {
-        kvstore *kvs = d->type->userdata;
+        kvstore *kvs = hashtableGetType(ht)->userdata;
         kvstoreMetadata *kvstoreMeta = kvstoreGetMetadata(kvs);
-        kvstoreDictMetadata *meta = (kvstoreDictMetadata *)dictMetadata(d);
+        kvstoreDictMetadata *meta = (kvstoreDictMetadata *)hashtableMetadata(ht);
         size_t alloc_size = kvobjAllocSize(kv);
         debugServerAssert(alloc_size <= meta->alloc_size);
         meta->alloc_size -= alloc_size;
@@ -360,6 +350,22 @@ static void dictDestructorKV(dict *d, void *key) {
         }
     }
     decrRefCount(kv);
+}
+
+/* Hashtable callback: destructor for sds entries */
+static void htSdsDestructor(hashtable *ht, void *entry) {
+    UNUSED(ht);
+    sdsfree((sds)entry);
+}
+
+/* Hashtable callback: destructor for set entries (tracks alloc_size) */
+static void htSetEntryDestructor(hashtable *ht, void *entry) {
+    sds sdsele = (sds)entry;
+    size_t entry_size = sdsAllocSize(sdsele);
+    size_t *alloc_size = htGetAllocSizeMeta(ht);
+    debugServerAssert(entry_size <= *alloc_size);
+    *alloc_size -= entry_size;
+    sdsfree(sdsele);
 }
 
 int dictSdsKeyCompare(dictCmpCache *cache, const void *key1,
@@ -396,15 +402,8 @@ void dictSdsDestructor(dict *d, void *val)
     sdsfree(val);
 }
 
-void setSdsDestructor(dict *d, void *val) {
-    *htGetMetadataSize(d) -= sdsAllocSize(val);
-    sdsfree(val);
-}
-
-size_t setDictMetadataBytes(dict *d) {
-    UNUSED(d);
-    return sizeof(size_t);
-}
+/* Hashtable callback: metadata size for tracking allocation size of entries */
+static size_t htSetMetadataSize(void) { return sizeof(size_t); }
 
 void *dictSdsDup(dict *d, const void *key) {
     UNUSED(d);
@@ -421,10 +420,6 @@ int dictObjKeyCompare(dictCmpCache *cache, const void *key1,
 uint64_t dictObjHash(const void *key) {
     const robj *o = key;
     return dictGenHashFunction(o->ptr, sdslen((sds)o->ptr));
-}
-
-uint64_t dictPtrHash(const void *key) {
-    return dictGenHashFunction((unsigned char*)&key,sizeof(key));
 }
 
 uint64_t dictSdsHash(const void *key) {
@@ -445,26 +440,15 @@ uint64_t dictCStrCaseHash(const void *key) {
     return dictGenCaseHashFunction((unsigned char*)key, strlen((char*)key));
 }
 
-/* Dict hash function for client */
-uint64_t dictClientHash(const void *key) {
-    return ((client *)key)->id;
+/* Hashtable hash function for client */
+static uint64_t htClientHash(const void *key) {
+    uint64_t id = ((client *)key)->id;
+    return dictGenHashFunction(&id, sizeof(id));
 }
 
-/* Dict compare function for client */
-int dictClientKeyCompare(dictCmpCache *cache, const void *key1, const void *key2) {
-    UNUSED(cache);
-    return ((client *)key1)->id == ((client *)key2)->id;
-}
-
-/* Dict compare function for null terminated string */
-int dictCStrKeyCompare(dictCmpCache *cache, const void *key1, const void *key2) {
-    int l1,l2;
-    UNUSED(cache);
-
-    l1 = strlen((char*)key1);
-    l2 = strlen((char*)key2);
-    if (l1 != l2) return 0;
-    return memcmp(key1, key2, l1) == 0;
+/* Hashtable compare function for client. Returns 0 if equal. */
+static int htClientKeyCompare(const void *key1, const void *key2) {
+    return ((client *)key1)->id != ((client *)key2)->id;
 }
 
 /* Dict case insensitive compare function for null terminated string */
@@ -515,10 +499,7 @@ static size_t kvstoreMetadataBytes(kvstore *kvs) {
     return sizeof(kvstoreMetadata);
 }
 
-static size_t kvstoreDictMetaBytes(dict *d) {
-    UNUSED(d);
-    return sizeof(kvstoreDictMetadata);
-}
+static size_t kvstoreDictMetaBytes(void) { return sizeof(kvstoreDictMetadata); }
 
 static int kvstoreCanFreeDict(kvstore *kvs, int didx) {
     kvstoreDictMetadata *meta = kvstoreGetDictMeta(kvs, didx, 0);
@@ -548,7 +529,7 @@ static void kvstoreOnDictEmpty(kvstore *kvs, int didx) {
     kvstoreDictMetadata *meta = kvstoreGetDictMeta(kvs, didx, 0);
     UNUSED(meta);
 #ifdef DEBUG_ASSERTIONS
-    dictEmpty(kvstoreGetDict(kvs, didx), NULL);
+    hashtableEmpty(kvstoreGetDict(kvs, didx), NULL);
 #endif
     debugServerAssert(meta->alloc_size == 0);
 }
@@ -568,23 +549,6 @@ int dictResizeAllowed(size_t moreMem, double usedRatio) {
     } else {
         return 1;
     }
-}
-
-/* dbDictType prefetch callbacks.
- * The main keyspace stores a kvobj as the entry's "stored key" (no_value=1).
- * The state machine in memory_prefetch.c calls these hooks to:
- *  - Bring the kvobj head into L1 before keyCompare runs (only useful when
- *    the entry holds an out-of-line pointer; embedded kvobjs are already
- *    in cache from the entry prefetch).
- *  - Bring kv->ptr into L1 for RAW strings, since addReplyBulk reads it
- *    immediately after the lookup. */
-static void *dbDictPrefetchEntryKey(const dictEntry *de) {
-    return dictEntryIsKey(de) ? NULL : dictGetKey(de);
-}
-
-static void *dbDictPrefetchEntryValue(const dictEntry *de) {
-    kvobj *kv = dictGetKey(de);
-    return (kv->type == OBJ_STRING && kv->encoding == OBJ_ENCODING_RAW) ? kv->ptr : NULL;
 }
 
 /* Generic hash table type where keys are Redis Objects, Values
@@ -624,82 +588,90 @@ dictType objectKeyHeapPointerValueDictType = {
     NULL                       /* allow to expand */
 };
 
-/* Set dictionary type. Keys are SDS strings, values are not used. */
-dictType setDictType = {
-    dictSdsHash,               /* hash function */
-    NULL,                      /* key dup */
-    NULL,                      /* val dup */
-    dictSdsKeyCompare,         /* key compare */
-    setSdsDestructor,          /* key destructor */
-    NULL,                      /* val destructor */
-    NULL,                      /* allow to expand */
-    .no_value = 1,             /* no values in this dict */
-    .keys_are_odd = 1,         /* an SDS string is always an odd pointer */
-    .dictMetadataBytes = setDictMetadataBytes,
+static void dbEntryPrefetchValue(const void *entry) {
+    const kvobj *kv = entry;
+    if (kv->type == OBJ_STRING && kv->encoding == OBJ_ENCODING_RAW)
+        redis_prefetch_read(kv->ptr);
+}
+
+/* Hashtable type for db->keys (kvobj entries) */
+hashtableType dbHashtableType = {
+    .entryGetKey = kvGetKey,
+    .hashFunction = dictSdsHash,
+    .keyCompare = htSdsKeyCompare,
+    .entryDestructor = htKvobjDestructor,
+    .entryPrefetchValue = dbEntryPrefetchValue,
+    .resizeAllowed = dictResizeAllowed,
+    /* getMetadataSize, rehashingStarted, rehashingCompleted, trackMemUsage,
+     * userdata are set by kvstore internally */
 };
 
-/* Db->dict, keys are of type kvobj, unification of key and value */
-dictType dbDictType = {
-    dictSdsHash,            /* hash function */
-    NULL,                   /* key dup */
-    NULL,                   /* val dup */
-    dictSdsCompareKV,       /* lookup key compare */
-    dictDestructorKV,       /* key destructor */
-    NULL,                   /* val destructor */
-    dictResizeAllowed,      /* allow to resize */
-    .no_value = 1,          /* keys and values are unified (kvobj) */
-    .keys_are_odd = 0,      /* simple kvobj (robj) struct */
-    .keyFromStoredKey = kvGetKey,    /* get key from stored-key */
-    .prefetchEntryKey = dbDictPrefetchEntryKey,
-    .prefetchEntryValue = dbDictPrefetchEntryValue,
+/* Hashtable type for db->expires (kvobj entries, no destructor - keys owns the
+ * entry) */
+hashtableType dbExpiresHashtableType = {
+    .entryGetKey = kvGetKey,
+    .hashFunction = dictSdsHash,
+    .keyCompare = htSdsKeyCompare,
+    .entryDestructor = NULL, /* expires doesn't own the kvobj, keys does */
+    .resizeAllowed = dictResizeAllowed,
 };
 
-/* Db->expires */
-dictType dbExpiresDictType = {
-    dictSdsHash,                /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    dictSdsCompareKV,           /* key compare */
-    NULL,                       /* key destructor */
-    NULL,                       /* val destructor */
-    dictResizeAllowed,          /* allow to resize */
-    .no_value = 1,              /* keys and values are unified (kvobj) */
-    .keys_are_odd = 0,          /* simple kvobj (robj) struct */
-    .keyFromStoredKey = kvGetKey,   /* get key from stored-key */
+/* Hashtable type for sets (sds entries, set semantics - entry is key) */
+hashtableType setHashtableType = {
+    .hashFunction = dictSdsHash,
+    .keyCompare = htSdsKeyCompare,
+    .entryDestructor = htSetEntryDestructor,
+    .getMetadataSize = htSetMetadataSize,
 };
 
-/* Command table. sds string -> command struct pointer. */
-dictType commandTableDictType = {
-    dictSdsCaseHash,            /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    dictSdsKeyCaseCompare,      /* key compare */
-    dictSdsDestructor,          /* key destructor */
-    NULL,                       /* val destructor */
-    NULL,                       /* allow to expand */
-    .force_full_rehash = 1,     /* force full rehashing */
+/* Hashtable type for temporary sds sets with destructor (for deduplication etc)
+ */
+hashtableType sdsHashtableType = {
+    .hashFunction = dictSdsHash,
+    .keyCompare = htSdsKeyCompare,
+    .entryDestructor = htSdsDestructor,
 };
 
-/* Hash type hash table (note that small hashes are represented with listpacks) */
-dictType hashDictType = {
-    dictSdsHash,                /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    dictSdsKeyCompare,          /* key compare */
-    dictSdsDestructor,          /* key destructor */
-    dictSdsDestructor,          /* val destructor */
-    NULL,                       /* allow to expand */
+/* Hashtable type for temporary sds sets without destructor (borrowed strings)
+ */
+hashtableType sdsHashtableTypeNoDup = {
+    .hashFunction = dictSdsHash,
+    .keyCompare = htSdsKeyCompare,
+    .entryDestructor = NULL,
 };
 
-/* Dict type without destructor */
-dictType sdsReplyDictType = {
-    dictSdsHash,                /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    dictSdsKeyCompare,          /* key compare */
-    NULL,                       /* key destructor */
-    NULL,                       /* val destructor */
-    NULL                        /* allow to expand */
+/* Command hashtable helper functions */
+static const void *htCommandGetFullname(const void *entry) {
+    const struct redisCommand *cmd = entry;
+    return cmd->fullname;
+}
+
+static const void *htSubcommandGetDeclaredName(const void *entry) {
+    const struct redisCommand *cmd = entry;
+    return cmd->declared_name;
+}
+
+static int htStringKeyCaseCompare(const void *key1, const void *key2) {
+    return strcasecmp(key1, key2);
+}
+
+/* Command hashtable type - keyed by cmd->fullname (sds), case-insensitive */
+hashtableType commandHashtableType = {
+    .entryGetKey = htCommandGetFullname,
+    .hashFunction = dictSdsCaseHash,
+    .keyCompare = htStringKeyCaseCompare,
+    .entryDestructor = NULL, /* commands are not freed via hashtable */
+    .instant_rehashing = 1,
+};
+
+/* Subcommand hashtable type - keyed by cmd->declared_name (const char*),
+ * case-insensitive */
+hashtableType subcommandHashtableType = {
+    .entryGetKey = htSubcommandGetDeclaredName,
+    .hashFunction = dictCStrCaseHash,
+    .keyCompare = htStringKeyCaseCompare,
+    .entryDestructor = NULL, /* subcommands are not freed via hashtable */
+    .instant_rehashing = 1,
 };
 
 /* Keylist hash table type has unencoded redis objects as keys and
@@ -715,28 +687,34 @@ dictType keylistDictType = {
     NULL                        /* allow to expand */
 };
 
-/* KeyDict hash table type has unencoded redis objects as keys and
- * dicts as values. It's used for PUBSUB command to track clients subscribing the channels. */
-dictType objToDictDictType = {
+/* Dict type has unencoded redis objects as keys and
+ * hashtables as values. It's used for PUBSUB patterns to track subscribing
+ * clients. */
+dictType objToHashtableDictType = {
     dictObjHash,                /* hash function */
     NULL,                       /* key dup */
     NULL,                       /* val dup */
     dictObjKeyCompare,          /* key compare */
     dictObjectDestructor,       /* key destructor */
-    dictDictDestructor,         /* val destructor */
+    dictHashtableDestructor, /* val destructor */
     NULL                        /* allow to expand */
 };
 
-/* Modules system dictionary type. Keys are module name,
- * values are pointer to RedisModule struct. */
-dictType modulesDictType = {
-    dictSdsCaseHash,            /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    dictSdsKeyCaseCompare,      /* key compare */
-    dictSdsDestructor,          /* key destructor */
-    NULL,                       /* val destructor */
-    NULL                        /* allow to expand */
+/* Hashtable type for modules - entries are RedisModule*, key is module->name */
+static const void *htModuleGetName(const void *entry) {
+    const RedisModule *module = entry;
+    return module->name;
+}
+
+static int htSdsKeyCaseCompare(const void *key1, const void *key2) {
+    return strcasecmp(key1, key2);
+}
+
+hashtableType modulesHashtableType = {
+    .entryGetKey = htModuleGetName,
+    .hashFunction = dictSdsCaseHash,
+    .keyCompare = htSdsKeyCaseCompare,
+    .entryDestructor = NULL, /* modules not freed via hashtable */
 };
 
 /* Migrate cache dict type. */
@@ -786,14 +764,11 @@ dictType sdsHashDictType = {
     NULL                        /* allow to expand */
 };
 
-/* Client Set dictionary type. Keys are client, values are not used. */
-dictType clientDictType = {
-    dictClientHash,             /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    dictClientKeyCompare,       /* key compare */
-    .no_value = 1,              /* no values in this dict */
-    .keys_are_odd = 0           /* a client pointer is not an odd pointer */            
+/* Hashtable type for client sets (client* entries, set semantics - entry is
+ * key) */
+hashtableType clientHashtableType = {
+    .hashFunction = htClientHash,
+    .keyCompare = htClientKeyCompare,
 };
 
 kvstoreType kvstoreBaseType = {
@@ -819,12 +794,16 @@ kvstoreType kvstoreExType = {
  * for dict.c to resize or rehash the tables accordingly to the fact we have an
  * active fork child running. */
 void updateDictResizePolicy(void) {
-    if (server.in_fork_child != CHILD_TYPE_NONE)
+    if (!server.dict_resizing || server.in_fork_child != CHILD_TYPE_NONE) {
         dictSetResizeEnabled(DICT_RESIZE_FORBID);
-    else if (hasActiveChildProcess())
+        hashtableSetResizePolicy(HASHTABLE_RESIZE_FORBID);
+    } else if (hasActiveChildProcess()) {
         dictSetResizeEnabled(DICT_RESIZE_AVOID);
-    else
+        hashtableSetResizePolicy(HASHTABLE_RESIZE_AVOID);
+    } else {
         dictSetResizeEnabled(DICT_RESIZE_ENABLE);
+        hashtableSetResizePolicy(HASHTABLE_RESIZE_ALLOW);
+    }
 }
 
 const char *strChildType(int type) {
@@ -2509,8 +2488,8 @@ void initServerConfig(void) {
     /* Command table -- we initialize it here as it is part of the
      * initial configuration, since command names may be changed via
      * redis.conf using the rename-command directive. */
-    server.commands = dictCreate(&commandTableDictType);
-    server.orig_commands = dictCreate(&commandTableDictType);
+    server.commands = hashtableCreate(&commandHashtableType);
+    server.orig_commands = hashtableCreate(&commandHashtableType);
     populateCommandTable();
 
     /* Debugging */
@@ -3060,8 +3039,8 @@ void initServer(void) {
         flags |= KVSTORE_FREE_EMPTY_DICTS;
     }
     for (j = 0; j < server.dbnum; j++) {
-        server.db[j].keys = kvstoreCreate(&kvstoreExType, &dbDictType, slot_count_bits, flags);
-        server.db[j].expires = kvstoreCreate(&kvstoreBaseType, &dbExpiresDictType, slot_count_bits, flags);
+        server.db[j].keys = kvstoreCreate(&kvstoreExType, &dbHashtableType, slot_count_bits, flags);
+        server.db[j].expires = kvstoreCreate(&kvstoreBaseType, &dbExpiresHashtableType, slot_count_bits, flags);
         server.db[j].subexpires = estoreCreate(&subexpiresBucketsType, slot_count_bits);
         server.db[j].expires_cursor = 0;
         server.db[j].blocking_keys = dictCreate(&keylistDictType);
@@ -3078,11 +3057,11 @@ void initServer(void) {
      * seems odd) just to make the code cleaner by making it be the same type as server.pubsubshard_channels
      * (which has to be kvstore), see pubsubtype.serverPubSubChannels */
     server.pubsub_channels = kvstoreCreate(
-        &kvstoreBaseType, &objToDictDictType,
+        &kvstoreBaseType, &pubsubHashtableType,
         0, KVSTORE_ALLOCATE_DICTS_ON_DEMAND);
-    server.pubsub_patterns = dictCreate(&objToDictDictType);
+    server.pubsub_patterns = dictCreate(&objToHashtableDictType);
     server.pubsubshard_channels = kvstoreCreate(
-        &kvstoreBaseType, &objToDictDictType,
+        &kvstoreBaseType, &pubsubHashtableType,
         slot_count_bits, KVSTORE_ALLOCATE_DICTS_ON_DEMAND | KVSTORE_FREE_EMPTY_DICTS);
     server.pubsub_clients = 0;
     server.watching_clients = 0;
@@ -3401,14 +3380,14 @@ sds catSubCommandFullname(const char *parent_name, const char *sub_name) {
     return sdscatfmt(sdsempty(), "%s|%s", parent_name, sub_name);
 }
 
-void commandAddSubcommand(struct redisCommand *parent, struct redisCommand *subcommand, const char *declared_name) {
+void commandAddSubcommand(struct redisCommand *parent, struct redisCommand *subcommand) {
     if (!parent->subcommands_dict)
-        parent->subcommands_dict = dictCreate(&commandTableDictType);
+        parent->subcommands_dict = hashtableCreate(&subcommandHashtableType);
 
     subcommand->parent = parent; /* Assign the parent command */
     subcommand->id = ACLGetCommandID(subcommand->fullname); /* Assign the ID used for ACL. */
 
-    serverAssert(dictAdd(parent->subcommands_dict, sdsnew(declared_name), subcommand) == DICT_OK);
+    serverAssert(hashtableAdd(parent->subcommands_dict, subcommand));
 }
 
 /* Set implicit ACl categories (see comment above the definition of
@@ -3469,7 +3448,7 @@ int populateCommandStructure(struct redisCommand *c) {
             if (populateCommandStructure(sub) == C_ERR)
                 continue;
 
-            commandAddSubcommand(c, sub, sub->declared_name);
+            commandAddSubcommand(c, sub);
         }
     }
 
@@ -3489,28 +3468,26 @@ void populateCommandTable(void) {
         if (c->declared_name == NULL)
             break;
 
-        int retval1, retval2;
-
         c->fullname = sdsnew(c->declared_name);
         if (populateCommandStructure(c) == C_ERR)
             continue;
 
-        retval1 = dictAdd(server.commands, sdsdup(c->fullname), c);
-        /* Populate an additional dictionary that will be unaffected
+        int added1 = hashtableAdd(server.commands, c);
+        /* Populate an additional hashtable that will be unaffected
          * by rename-command statements in redis.conf. */
-        retval2 = dictAdd(server.orig_commands, sdsdup(c->fullname), c);
-        serverAssert(retval1 == DICT_OK && retval2 == DICT_OK);
+        int added2 = hashtableAdd(server.orig_commands, c);
+        serverAssert(added1 && added2);
     }
 }
 
-void resetCommandTableStats(dict* commands) {
+void resetCommandTableStats(hashtable *commands) {
     struct redisCommand *c;
-    dictEntry *de;
-    dictIterator di;
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitSafeIterator(&di, commands);
-    while((de = dictNext(&di)) != NULL) {
-        c = (struct redisCommand *) dictGetVal(de);
+    hashtableInitIterator(&iter, commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        c = entry;
         c->microseconds = 0;
         c->calls = 0;
         c->rejected_calls = 0;
@@ -3525,7 +3502,7 @@ void resetCommandTableStats(dict* commands) {
         if (c->subcommands_dict)
             resetCommandTableStats(c->subcommands_dict);
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 }
 
 void resetErrorTableStats(void) {
@@ -3575,13 +3552,16 @@ void redisOpArrayFree(redisOpArray *oa) {
 /* ====================== Commands lookup and execution ===================== */
 
 int isContainerCommandBySds(sds s) {
-    struct redisCommand *base_cmd = dictFetchValue(server.commands, s);
-    int has_subcommands = base_cmd && base_cmd->subcommands_dict;
-    return has_subcommands;
+    void *entry = NULL;
+    hashtableFind(server.commands, s, &entry);
+    struct redisCommand *base_cmd = entry;
+    return base_cmd && base_cmd->subcommands_dict;
 }
 
 struct redisCommand *lookupSubcommand(struct redisCommand *container, sds sub_name) {
-    return dictFetchValue(container->subcommands_dict, sub_name);
+    void *entry = NULL;
+    hashtableFind(container->subcommands_dict, sub_name, &entry);
+    return entry;
 }
 
 /* Look up a command by argv and argc
@@ -3592,8 +3572,10 @@ struct redisCommand *lookupSubcommand(struct redisCommand *container, sds sub_na
  * name (e.g. in COMMAND INFO) rather than to find the command
  * a user requested to execute (in processCommand).
  */
-struct redisCommand *lookupCommandLogic(dict *commands, robj **argv, int argc, int strict) {
-    struct redisCommand *base_cmd = dictFetchValue(commands, argv[0]->ptr);
+static struct redisCommand *lookupCommandLogic(hashtable *commands, robj **argv, int argc, int strict) {
+    void *entry = NULL;
+    hashtableFind(commands, argv[0]->ptr, &entry);
+    struct redisCommand *base_cmd = entry;
     int has_subcommands = base_cmd && base_cmd->subcommands_dict;
     if (argc == 1 || !has_subcommands) {
         if (strict && argc != 1)
@@ -3612,7 +3594,7 @@ struct redisCommand *lookupCommand(robj **argv, int argc) {
     return lookupCommandLogic(server.commands,argv,argc,0);
 }
 
-struct redisCommand *lookupCommandBySdsLogic(dict *commands, sds s) {
+struct redisCommand *lookupCommandBySdsLogic(hashtable *commands, sds s) {
     int argc, j;
     sds *strings = sdssplitlen(s,sdslen(s),"|",1,&argc);
     if (strings == NULL)
@@ -3640,7 +3622,7 @@ struct redisCommand *lookupCommandBySds(sds s) {
     return lookupCommandBySdsLogic(server.commands,s);
 }
 
-struct redisCommand *lookupCommandByCStringLogic(dict *commands, const char *s) {
+struct redisCommand *lookupCommandByCStringLogic(hashtable *commands, const char *s) {
     struct redisCommand *cmd;
     sds name = sdsnew(s);
 
@@ -5594,19 +5576,19 @@ void addReplyCommandSubCommands(client *c, struct redisCommand *cmd, void (*repl
     }
 
     if (use_map)
-        addReplyMapLen(c, dictSize(cmd->subcommands_dict));
+        addReplyMapLen(c, hashtableSize(cmd->subcommands_dict));
     else
-        addReplyArrayLen(c, dictSize(cmd->subcommands_dict));
-    dictEntry *de;
-    dictIterator di;
-    dictInitSafeIterator(&di, cmd->subcommands_dict);
-    while((de = dictNext(&di)) != NULL) {
-        struct redisCommand *sub = (struct redisCommand *)dictGetVal(de);
+        addReplyArrayLen(c, hashtableSize(cmd->subcommands_dict));
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, cmd->subcommands_dict, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        struct redisCommand *sub = entry;
         if (use_map)
             addReplyBulkCBuffer(c, sub->fullname, sdslen(sub->fullname));
         reply_function(c, sub);
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 }
 
 /* Output the representation of a Redis command. Used by the COMMAND command and COMMAND INFO. */
@@ -5760,24 +5742,24 @@ void getKeysSubcommand(client *c) {
 }
 
 void genericCommandCommand(client *c, int count_only) {
-    dictIterator di;
-    dictEntry *de;
+    hashtableIterator iter;
+    void *entry;
     void *len = NULL;
     int count = 0;
 
     if (!count_only)
         len = addReplyDeferredLen(c);
 
-    dictInitIterator(&di, server.commands);
-    while ((de = dictNext(&di)) != NULL) {
-        struct redisCommand *cmd = dictGetVal(de);
+    hashtableInitIterator(&iter, server.commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        struct redisCommand *cmd = entry;
         if (!commandVisibleForClient(c, cmd))
             continue;
         if (!count_only)
-            addReplyCommandInfo(c, dictGetVal(de));
+            addReplyCommandInfo(c, cmd);
         count++;
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
     if (count_only)
         addReplyLongLong(c, count);
     else
@@ -5839,13 +5821,13 @@ int shouldFilterFromCommandList(struct redisCommand *cmd, commandListFilter *fil
 }
 
 /* COMMAND LIST FILTERBY (MODULE <module-name>|ACLCAT <cat>|PATTERN <pattern>) */
-void commandListWithFilter(client *c, dict *commands, commandListFilter filter, int *numcmds) {
-    dictEntry *de;
-    dictIterator di;
+void commandListWithFilter(client *c, hashtable *commands, commandListFilter filter, int *numcmds) {
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, commands);
-    while ((de = dictNext(&di)) != NULL) {
-        struct redisCommand *cmd = dictGetVal(de);
+    hashtableInitIterator(&iter, commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        struct redisCommand *cmd = entry;
         if (commandVisibleForClient(c, cmd) && !shouldFilterFromCommandList(cmd,&filter)) {
             addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));
             (*numcmds)++;
@@ -5855,17 +5837,17 @@ void commandListWithFilter(client *c, dict *commands, commandListFilter filter, 
             commandListWithFilter(c, cmd->subcommands_dict, filter, numcmds);
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 }
 
 /* COMMAND LIST */
-void commandListWithoutFilter(client *c, dict *commands, int *numcmds) {
-    dictEntry *de;
-    dictIterator di;
+void commandListWithoutFilter(client *c, hashtable *commands, int *numcmds) {
+    hashtableIterator iter;
+    void *entry;
 
-    dictInitIterator(&di, commands);
-    while ((de = dictNext(&di)) != NULL) {
-        struct redisCommand *cmd = dictGetVal(de);
+    hashtableInitIterator(&iter, commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
+        struct redisCommand *cmd = entry;
         if (commandVisibleForClient(c, cmd)) {
             addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));
             (*numcmds)++;
@@ -5875,7 +5857,7 @@ void commandListWithoutFilter(client *c, dict *commands, int *numcmds) {
             commandListWithoutFilter(c, cmd->subcommands_dict, numcmds);
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 }
 
 /* COMMAND LIST [FILTERBY (MODULE <module-name>|ACLCAT <cat>|PATTERN <pattern>)] */
@@ -5940,19 +5922,19 @@ void commandDocsCommand(client *c) {
     int numcmds = 0;
     if (c->argc == 2) {
         /* Reply with an array of all commands */
-        dictIterator di;
-        dictEntry *de;
+        hashtableIterator iter;
+        void *entry;
         void *replylen = addReplyDeferredLen(c);
-        dictInitIterator(&di, server.commands);
-        while ((de = dictNext(&di)) != NULL) {
-            struct redisCommand *cmd = dictGetVal(de);
+        hashtableInitIterator(&iter, server.commands, HASHTABLE_ITER_SAFE);
+        while (hashtableNext(&iter, &entry)) {
+            struct redisCommand *cmd = entry;
             if (commandVisibleForClient(c, cmd)) {
                 addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));
                 addReplyCommandDocs(c, cmd);
                 numcmds++;
             }
         }
-        dictResetIterator(&di);
+        hashtableCleanupIterator(&iter);
         setDeferredMapLen(c,replylen,numcmds);
     } else {
         /* Reply with an array of the requested commands (if we find them) */
@@ -6149,14 +6131,14 @@ int getActiveClientsInWindow(void) {
     return count;
 }
 
-sds genRedisInfoStringCommandStats(sds info, dict *commands) {
+sds genRedisInfoStringCommandStats(sds info, hashtable *commands) {
     struct redisCommand *c;
-    dictEntry *de;
-    dictIterator di;
-    dictInitSafeIterator(&di, commands);
-    while((de = dictNext(&di)) != NULL) {
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
         char *tmpsafe;
-        c = (struct redisCommand *) dictGetVal(de);
+        c = entry;
         if (c->calls || c->failed_calls || c->rejected_calls) {
             if (c->slowlog_count > 0) {
                 info = sdscatprintf(info,
@@ -6182,7 +6164,7 @@ sds genRedisInfoStringCommandStats(sds info, dict *commands) {
             info = genRedisInfoStringCommandStats(info, c->subcommands_dict);
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 
     return info;
 }
@@ -6203,14 +6185,14 @@ sds genRedisInfoStringACLStats(sds info) {
     return info;
 }
 
-sds genRedisInfoStringLatencyStats(sds info, dict *commands) {
+sds genRedisInfoStringLatencyStats(sds info, hashtable *commands) {
     struct redisCommand *c;
-    dictEntry *de;
-    dictIterator di;
-    dictInitSafeIterator(&di, commands);
-    while((de = dictNext(&di)) != NULL) {
+    hashtableIterator iter;
+    void *entry;
+    hashtableInitIterator(&iter, commands, HASHTABLE_ITER_SAFE);
+    while (hashtableNext(&iter, &entry)) {
         char *tmpsafe;
-        c = (struct redisCommand *) dictGetVal(de);
+        c = entry;
         if (c->latency_histogram) {
             info = fillPercentileDistributionLatencies(info,
                 getSafeInfoString(c->fullname, sdslen(c->fullname), &tmpsafe),
@@ -6221,7 +6203,7 @@ sds genRedisInfoStringLatencyStats(sds info, dict *commands) {
             info = genRedisInfoStringLatencyStats(info, c->subcommands_dict);
         }
     }
-    dictResetIterator(&di);
+    hashtableCleanupIterator(&iter);
 
     return info;
 }
@@ -7582,17 +7564,10 @@ void dismissClientMemory(client *c) {
     }
 }
 
-/* Dismiss the hash table bucket arrays of a dict. */
-void dismissDictBucketsMemory(dict *d) {
-    if (!d) return;
-    dismissMemory(d->ht_table[0], DICTHT_SIZE(d->ht_size_exp[0]) * sizeof(dictEntry*));
-    dismissMemory(d->ht_table[1], DICTHT_SIZE(d->ht_size_exp[1]) * sizeof(dictEntry*));
-}
-
 /* Dismiss the hash table bucket arrays for all dicts in the given kvstore. */
 void dismissKvstoreBucketsMemory(kvstore *kvs) {
     for (int didx = 0; didx < kvstoreNumDicts(kvs); didx++) {
-        dismissDictBucketsMemory(kvstoreGetDict(kvs, didx));
+        dismissHashtable(kvstoreGetDict(kvs, didx));
     }
 }
 
