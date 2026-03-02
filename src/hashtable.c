@@ -113,6 +113,12 @@ static bool hashtable_can_abort_shrink = true;
 #define MIN_FILL_PERCENT_SOFT 13
 #define MIN_FILL_PERCENT_HARD 3
 
+/* Force resize ratio. When resize policy is AVOID (typically during BGSAVE),
+ * we still allow rehashing to proceed if the ratio is extreme. This matches
+ * dict's behavior where extreme ratios (>= 4x for expansion, <= 1/32 for
+ * shrinking) allow rehashing to continue during BGSAVE. */
+#define FORCE_RESIZE_RATIO 4
+
 /* --- Rehash policy --- */
 
 /* We reduce memory access time during rehashing (in the scenario of expansion)
@@ -711,10 +717,35 @@ static void rehashStep(hashtable *ht) {
     rehashStepExpand(ht);
 }
 
+/* Check if rehashing should be allowed when resize policy is AVOID.
+ * Returns true if the resize ratio is extreme enough to force rehashing.
+ * This allows rehashing to continue during BGSAVE to prevent excessive memory
+ * waste when the size imbalance is significant.
+ *
+ * Dict uses 32x threshold for shrinking (HASHTABLE_MIN_FILL * dict_force_resize_ratio = 8 * 4).
+ * However, dict has 1 entry per bucket while hashtable has 7 entries per bucket,
+ * so the same bucket ratio represents different fill factors. We use a lower
+ * threshold (FORCE_RESIZE_RATIO = 4x) to match the intended behavior. */
+static inline bool shouldForceRehash(hashtable *ht) {
+    size_t s0 = numBuckets(ht->bucket_exp[0]);
+    size_t s1 = numBuckets(ht->bucket_exp[1]);
+
+    if (s1 > s0) {
+        /* Expanding: force rehash if target is >= FORCE_RESIZE_RATIO times larger */
+        return s1 >= FORCE_RESIZE_RATIO * s0;
+    } else {
+        /* Shrinking: force rehash if current is >= FORCE_RESIZE_RATIO times larger.
+         * This is more aggressive than dict's 32x because hashtable buckets hold
+         * multiple entries, so even a small bucket ratio implies significant waste. */
+        return s0 >= FORCE_RESIZE_RATIO * s1;
+    }
+}
+
 /* Called internally on lookup and other reads to the table. */
 static inline void rehashStepOnReadIfNeeded(hashtable *ht) {
     if (!hashtableIsRehashing(ht) || ht->pause_rehash) return;
-    if (resize_policy != HASHTABLE_RESIZE_ALLOW) return;
+    if (resize_policy == HASHTABLE_RESIZE_FORBID) return;
+    if (resize_policy == HASHTABLE_RESIZE_AVOID && !shouldForceRehash(ht)) return;
     rehashStep(ht);
 }
 
@@ -1449,7 +1480,8 @@ void hashtableRehashingInfo(hashtable *ht, size_t *from_size, size_t *to_size) {
  * Returns the number of rehashed buckets chains. */
 int hashtableRehashMicroseconds(hashtable *ht, uint64_t us) {
     if (ht->pause_rehash > 0) return 0;
-    if (resize_policy != HASHTABLE_RESIZE_ALLOW) return 0;
+    if (resize_policy == HASHTABLE_RESIZE_FORBID) return 0;
+    if (resize_policy == HASHTABLE_RESIZE_AVOID && !shouldForceRehash(ht)) return 0;
 
     monotime timer;
     elapsedStart(&timer);
