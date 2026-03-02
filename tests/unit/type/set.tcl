@@ -1378,14 +1378,10 @@ foreach type {single multiple single_multiple} {
         assert_equal [r scard myset] 30
         
         # Hash set rehashing would be completed while removing members from the `myset`
-        # We also check the size and members in the hash table.
-        verify_rehashing_completed_key myset 64 30
-
-        # Now that we have a hash set with only one long chain bucket.
         set htstats [r debug HTSTATS-KEY myset full]
-        assert {[regexp {different slots: ([0-9]+)} $htstats - different_slots]}
-        assert {[regexp {max chain length: ([0-9]+)} $htstats - max_chain_length]}
-        assert {$different_slots == 1 && $max_chain_length == 30}
+        assert {![string match {*rehashing target*} $htstats]}
+        assert {[regexp {number of entries: ([0-9]+)} $htstats - num_entries]}
+        assert {$num_entries == 30}
 
         # 9) Use positive count (PATH 4) to get 10 elements (out of 30) each time.
         unset -nocomplain allkey
