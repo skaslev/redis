@@ -902,6 +902,13 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
             /* Set the entry to NULL before deletion to prevent double-free.
              * The entry destructor will see NULL and skip freeing. */
             *ref = NULL;
+        } else {
+            /* Sync delete: free the object synchronously.
+             * The two-phase pop delete does NOT call the entry destructor,
+             * so we need to free the entry manually. */
+            if (server.memory_tracking_enabled)
+                updateSlotAllocSize(db, slot, kv, kvobjAllocSize(kv), -1);
+            decrRefCount(kv);
         }
         kvstoreDictTwoPhasePopDelete(db->keys, slot, &pos);
 

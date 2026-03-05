@@ -814,12 +814,12 @@ int kvstoreDictExpand(kvstore *kvs, int didx, unsigned long size)
     return hashtableExpand(ht, size);
 }
 
-unsigned long kvstoreDictScanDefrag(kvstore *kvs, int didx, unsigned long v, hashtableScanFunction fn, void *(*defragfn)(void *), void *privdata)
+unsigned long kvstoreDictScanDefrag(kvstore *kvs, int didx, unsigned long v, hashtableScanFunction fn, void *(*defragfn)(void *), void *privdata, int flags)
 {
     hashtable *ht = kvstoreGetDict(kvs, didx);
     if (!ht)
         return 0;
-    return hashtableScanDefrag(ht, v, fn, privdata, defragfn, 0);
+    return hashtableScanDefrag(ht, v, fn, privdata, defragfn, flags);
 }
 
 /* Unlike kvstoreDictScanDefrag(), this method doesn't defrag the data(keys and values)

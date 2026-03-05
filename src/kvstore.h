@@ -131,7 +131,7 @@ int kvstoreDictGetRandomKey(kvstore *kvs, int didx, void **found);
 int kvstoreDictGetFairRandomKey(kvstore *kvs, int didx, void **found);
 unsigned int kvstoreDictGetSomeKeys(kvstore *kvs, int didx, void **dst, unsigned int count);
 int kvstoreDictExpand(kvstore *kvs, int didx, unsigned long size);
-unsigned long kvstoreDictScanDefrag(kvstore *kvs, int didx, unsigned long v, hashtableScanFunction fn, void *(*defragfn)(void *), void *privdata);
+unsigned long kvstoreDictScanDefrag(kvstore *kvs, int didx, unsigned long v, hashtableScanFunction fn, void *(*defragfn)(void *), void *privdata, int flags);
 typedef hashtable *(kvstoreDictLUTDefragFunction)(hashtable *d);
 unsigned long kvstoreDictLUTDefrag(kvstore *kvs, unsigned long cursor, kvstoreDictLUTDefragFunction *defragfn);
 int kvstoreDictFind(kvstore *kvs, int didx, void *key, void **found);

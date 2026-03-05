@@ -1477,12 +1477,16 @@ void computeDefragCycles(void) {
 
 /* This helper function handles most of the work for iterating over a kvstore. 'privdata', if
  * provided, MUST begin with 'kvstoreIterState' and this part is automatically updated by this
- * function during the iteration. */
+ * function during the iteration.
+ *
+ * 'scan_flags' is passed to hashtableScanDefrag. Use HASHTABLE_SCAN_EMIT_REF when the scan
+ * callback needs to modify entries in place (e.g., for defragging keys). */
 static doneStatus defragStageKvstoreHelper(monotime endtime,
                                            void *ctx,
                                            hashtableScanFunction scan_fn,
                                            kvstoreHelperPreContinueFn precontinue_fn,
-                                           void *(*defragfn)(void *))
+                                           void *(*defragfn)(void *),
+                                           int scan_flags)
 {
     unsigned int iterations = 0;
     unsigned long long prev_defragged = server.stat_active_defrag_hits;
@@ -1523,7 +1527,7 @@ static doneStatus defragStageKvstoreHelper(monotime endtime,
 
         /* Whatever privdata's actual type, this function requires that it begins with kvstoreIterState. */
         state->cursor = kvstoreDictScanDefrag(state->kvs, state->slot, state->cursor,
-                                             scan_fn, defragfn, ctx);
+                                             scan_fn, defragfn, ctx, scan_flags);
     }
 
     return DEFRAG_NOT_DONE;
@@ -1537,9 +1541,11 @@ static doneStatus defragStageDbKeys(void *ctx, monotime endtime) {
         return DEFRAG_DONE;
     }
 
-    /* Note: for DB keys, the scan callback handles defrag directly. */
+    /* Note: for DB keys, the scan callback handles defrag directly.
+     * Use HASHTABLE_SCAN_EMIT_REF so the callback receives a pointer to the entry slot,
+     * allowing in-place updates during scan. */
     return defragStageKvstoreHelper(endtime, ctx,
-        dbKeysScanCallback, defragLaterStep, activeDefragAlloc);
+        dbKeysScanCallback, defragLaterStep, activeDefragAlloc, HASHTABLE_SCAN_EMIT_REF);
 }
 
 static doneStatus defragStageExpiresKvstore(void *ctx, monotime endtime) {
@@ -1551,7 +1557,7 @@ static doneStatus defragStageExpiresKvstore(void *ctx, monotime endtime) {
     }
 
     return defragStageKvstoreHelper(endtime, ctx,
-        hashtableScanCallbackCountScanned, NULL, activeDefragAlloc);
+        hashtableScanCallbackCountScanned, NULL, activeDefragAlloc, 0);
 }
 
 /* Defrag (hash) object with subexpiry and update its reference in the DB keys. */
@@ -1629,7 +1635,7 @@ static doneStatus defragStageSubexpires(void *ctx, monotime endtime) {
 
 static doneStatus defragStagePubsubKvstore(void *ctx, monotime endtime) {
     return defragStageKvstoreHelper(endtime, ctx,
-        defragPubsubScanCallback, NULL, activeDefragAlloc);
+        defragPubsubScanCallback, NULL, activeDefragAlloc, HASHTABLE_SCAN_EMIT_REF);
 }
 
 static doneStatus defragLuaScripts(void *ctx, monotime endtime) {
