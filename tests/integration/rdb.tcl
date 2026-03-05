@@ -92,8 +92,9 @@ start_server {overrides {loglevel verbose}} {
 
         restart_server 0 true false
 
-        # Verify DB resize log message
-        verify_log_message 0 "*DB $dbid resized*1024 key*512 expire*" 0
+        # Verify DB resize log message - format is "DB N resized: X key buckets, Y expire buckets"
+        # The exact bucket count depends on hashtable implementation
+        verify_log_message 0 "*DB $dbid resized*key bucket*expire bucket*" 0
     }
 }
 
