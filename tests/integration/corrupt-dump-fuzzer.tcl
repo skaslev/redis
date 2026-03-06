@@ -253,7 +253,14 @@ foreach sanitize_dump {no yes} {
                 }
 
                 incr cycle
-                if { ([clock seconds]-$start_time) >= $min_duration && $cycle >= $min_cycles} {
+                set elapsed [expr {[clock seconds]-$start_time}]
+                if { $elapsed >= $min_duration && $cycle >= $min_cycles} {
+                    break
+                }
+                # Hard cap: stop before the test framework timeout fires.
+                # Each sanitize_dump mode is a separate test case, each with
+                # $::timeout seconds. Leave 10% margin for cleanup.
+                if { $elapsed >= $::timeout * 9 / 10 } {
                     break
                 }
             }
