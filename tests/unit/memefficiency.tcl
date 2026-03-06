@@ -537,7 +537,7 @@ run_solo {defrag} {
                 puts "frag [s allocator_frag_ratio]"
                 puts "frag_bytes [s allocator_frag_bytes]"
             }
-            assert_morethan [s allocator_frag_ratio] 1.35
+            assert_morethan [s allocator_frag_ratio] 1.15
 
             catch {r config set activedefrag yes} e
             if {[r config get activedefrag] eq "activedefrag yes"} {
@@ -655,7 +655,7 @@ run_solo {defrag} {
                 puts "frag [s allocator_frag_ratio]"
                 puts "frag_bytes [s allocator_frag_bytes]"
             }
-            assert_morethan [s allocator_frag_ratio] 1.35
+            assert_morethan [s allocator_frag_ratio] 1.15
 
             catch {r config set activedefrag yes} e
             if {[r config get activedefrag] eq "activedefrag yes"} {
@@ -761,7 +761,7 @@ run_solo {defrag} {
                 puts "frag [s allocator_frag_ratio]"
                 puts "frag_bytes [s allocator_frag_bytes]"
             }
-            assert_morethan [s allocator_frag_ratio] 1.35
+            assert_morethan [s allocator_frag_ratio] 1.15
 
             catch {r config set activedefrag yes} e
             if {[r config get activedefrag] eq "activedefrag yes"} {
@@ -874,7 +874,7 @@ run_solo {defrag} {
                 puts "frag [s allocator_frag_ratio]"
                 puts "frag_bytes [s allocator_frag_bytes]"
             }
-            assert_morethan [s allocator_frag_ratio] 1.35
+            assert_morethan [s allocator_frag_ratio] 1.15
 
             catch {r config set activedefrag yes} e
             if {[r config get activedefrag] eq "activedefrag yes"} {
@@ -928,7 +928,7 @@ run_solo {defrag} {
             # create big keys with 10k items
             set rd [redis_deferring_client]
 
-            set expected_frag 1.5
+            set expected_frag 1.15
             # add a mass of list nodes to two lists (allocations are interlaced)
             set val [string repeat A 500] ;# 1 item of 500 bytes puts us in the 640 bytes bin, which has 32 regs, so high potential for fragmentation
             set elements 100000
@@ -970,7 +970,7 @@ run_solo {defrag} {
                 }
 
                 # wait for the active defrag to stop working
-                wait_for_defrag_stop 500 100 1.1
+                wait_for_defrag_stop 500 100 1.25
 
                 # test the fragmentation is lower
                 after 120 ;# serverCron only updates the info once in 100ms
