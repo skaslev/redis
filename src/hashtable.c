@@ -71,10 +71,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#if HAVE_X86_SIMD
+#if defined(HAVE_X86_SIMD)
 #include <immintrin.h>
 #endif
-#if HAVE_ARM_NEON
+#if defined(HAVE_ARM_NEON)
 #include <arm_neon.h>
 #endif
 
@@ -863,7 +863,7 @@ static inline int checkCandidateInBucket(hashtable *ht, bucket *b, int pos, cons
     return 0;
 }
 
-#if HAVE_X86_SIMD
+#if defined(HAVE_X86_SIMD)
 ATTRIBUTE_TARGET_SSE2
 static int findKeyInBucketSSE2(hashtable *ht, bucket *b, uint8_t h2, const void *key, int table, int *pos_in_bucket, int *table_index) {
     /* Get the bucket's presence mask - indicates which positions are filled. */
@@ -888,7 +888,7 @@ static int findKeyInBucketSSE2(hashtable *ht, bucket *b, uint8_t h2, const void 
 }
 #endif
 
-#if HAVE_ARM_NEON && ENTRIES_PER_BUCKET <= 8
+#if defined(HAVE_ARM_NEON) && ENTRIES_PER_BUCKET <= 8
 /* 32 bit architectures would require a different implementation
  * consider that even if they had Neon SIMD support,
  * they have 12 entries per bucket and only 32-bit scalar registers */
@@ -944,10 +944,10 @@ static bucket *findBucket(hashtable *ht, uint64_t hash, const void *key, int *po
         }
         bucket *b = &ht->tables[table][bucket_idx];
         do {
-#if HAVE_X86_SIMD
+#if defined(HAVE_X86_SIMD)
             /* All x86-64 CPUs have SSE2. */
             if (findKeyInBucketSSE2(ht, b, h2, key, table, pos_in_bucket, table_index)) return b;
-#elif HAVE_ARM_NEON && ENTRIES_PER_BUCKET <= 8
+#elif defined(HAVE_ARM_NEON) && ENTRIES_PER_BUCKET <= 8
             if (findKeyInBucketNeon(ht, b, h2, key, table, pos_in_bucket, table_index)) return b;
 #else
             /* Find candidate entries with presence flag set and matching h2 hash. */
