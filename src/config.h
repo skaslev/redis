@@ -360,6 +360,17 @@ void setcpuaffinity(const char *cpulist);
     #define ATTRIBUTE_TARGET_POPCNT
 #endif
 
+/* Check for x86-64 SIMD (SSE2 is baseline on all x86_64 CPUs) */
+#if defined(__x86_64__) && ((defined(__GNUC__) && __GNUC__ >= 5) || (defined(__clang__) && __clang_major__ >= 4))
+#define HAVE_X86_SIMD
+#define ATTRIBUTE_TARGET_SSE2 __attribute__((target("sse2")))
+#endif
+
+/* Check for ARM NEON SIMD (NEON is baseline on aarch64) */
+#if defined(__aarch64__) && (defined(__ARM_NEON) || defined(__ARM_NEON__))
+#define HAVE_ARM_NEON
+#endif
+
 /* Check if we can compile AVX2 code */
 #if defined (__x86_64__) && ((defined(__GNUC__) && __GNUC__ >= 5) || (defined(__clang__) && __clang_major__ >= 4))
 #if defined(__has_attribute) && __has_attribute(target)
