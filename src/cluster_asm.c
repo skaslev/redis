@@ -1704,11 +1704,6 @@ void asmSlotSnapshotSucceed(struct asmTask *task) {
 
     task->state = ASM_SEND_STREAM;
     task->rdb_channel_state = ASM_COMPLETED;
-
-    if (unlikely(asmDebugIsFailPointActive(ASM_MIGRATE_MAIN_CHANNEL, task->state))) {
-        asmTaskSetFailed(task, "Main channel - Fail point triggered at %s",
-                         asmTaskStateToString(task->state));
-    }
 }
 
 /* Called when the RDB channel fails to send the snapshot. */
