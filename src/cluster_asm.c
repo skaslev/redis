@@ -1704,6 +1704,11 @@ void asmSlotSnapshotSucceed(struct asmTask *task) {
 
     task->state = ASM_SEND_STREAM;
     task->rdb_channel_state = ASM_COMPLETED;
+
+    if (unlikely(asmDebugIsFailPointActive(ASM_MIGRATE_MAIN_CHANNEL, task->state))) {
+        asmTaskSetFailed(task, "Main channel - Fail point triggered at %s",
+                         asmTaskStateToString(task->state));
+    }
 }
 
 /* Called when the RDB channel fails to send the snapshot. */
@@ -2135,6 +2140,14 @@ void clusterSyncSlotsCommand(client *c) {
             if (task->state == ASM_SEND_BULK_AND_STREAM || task->state == ASM_SEND_STREAM) {
                 /* Pause writes on the main channel if the lag is less than the threshold. */
                 if (task->dest_offset + server.asm_handoff_max_lag_bytes >= task->source_offset) {
+                    if (unlikely(asmDebugIsFailPointActive(ASM_MIGRATE_MAIN_CHANNEL, task->state))) {
+                        asmTaskSetFailed(task, "Main channel - Fail point triggered at %s",
+                                         asmTaskStateToString(task->state));
+                        return;
+                    }
+                    if (task->state == ASM_SEND_BULK_AND_STREAM &&
+                        unlikely(asmDebugIsFailPointActive(ASM_MIGRATE_MAIN_CHANNEL, ASM_SEND_STREAM)))
+                        return; /* Wait for RDB to complete and enter send-stream first. */
                     if (unlikely(asmDebugIsFailPointActive(ASM_MIGRATE_MAIN_CHANNEL, ASM_HANDOFF_PREP)))
                         return; /* Do not enter handoff prep state for testing buffer drain timeout. */
 
@@ -2522,6 +2535,12 @@ void asmSyncBufferStreamToDb(asmTask *task) {
     int ret = replDataBufStreamToDb(&task->sync_buffer, &ctx);
 
     if (ret == C_OK) {
+        if (unlikely(asmDebugIsFailPointActive(ASM_IMPORT_MAIN_CHANNEL, task->state))) {
+            asmTaskSetFailed(task, "Main channel - Fail point triggered at %s",
+                             asmTaskStateToString(task->state));
+            return;
+        }
+
         if (task->stream_eof_during_streaming) {
             /* STREAM-EOF received during streaming, we can take over now. */
             asmImportTakeover(task);
