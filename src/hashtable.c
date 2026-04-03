@@ -186,7 +186,7 @@ void hashtableSetResizePolicy(hashtableResizePolicy policy) {
 #if SIZE_MAX == UINT64_MAX /* 64-bit version */
 
 #define ENTRIES_PER_BUCKET 7
-#define BUCKET_BITS_TYPE uint8_t
+#define BUCKET_BITS_TYPE __extension__ uint8_t
 #define BITS_NEEDED_TO_STORE_POS_WITHIN_BUCKET 3
 
 /* Selecting the number of buckets.
@@ -222,7 +222,7 @@ void hashtableSetResizePolicy(hashtableResizePolicy policy) {
 #elif SIZE_MAX == UINT32_MAX /* 32-bit version */
 
 #define ENTRIES_PER_BUCKET 12
-#define BUCKET_BITS_TYPE uint16_t
+#define BUCKET_BITS_TYPE __extension__ uint16_t
 #define BITS_NEEDED_TO_STORE_POS_WITHIN_BUCKET 4
 #define BUCKET_FACTOR 3
 #define BUCKET_DIVISOR 32
@@ -352,7 +352,7 @@ struct iter {
         uint64_t fingerprint;
         /* Safe iterator temporary storage for bucket chain compaction. */
         uint64_t last_seen_size;
-    };
+    } u;
     iter *next_safe_iter; /* Next safe iterator in hashtable's list */
 };
 
@@ -2298,7 +2298,7 @@ void hashtableCleanupIterator(hashtableIterator *iterator) {
         if (isSafe(iter)) {
             hashtableResumeRehashing(iter->hashtable);
         } else {
-            assert(iter->fingerprint == hashtableFingerprint(iter->hashtable));
+            assert(iter->u.fingerprint == hashtableFingerprint(iter->hashtable));
         }
     }
     if (isSafe(iter))
@@ -2337,9 +2337,9 @@ bool hashtableNext(hashtableIterator *iterator, void **elemptr) {
             /* It's the first call to next. */
             if (isSafe(iter)) {
                 hashtablePauseRehashing(iter->hashtable);
-                iter->last_seen_size = iter->hashtable->used[iter->table];
+                iter->u.last_seen_size = iter->hashtable->used[iter->table];
             } else {
-                iter->fingerprint = hashtableFingerprint(iter->hashtable);
+                iter->u.fingerprint = hashtableFingerprint(iter->hashtable);
             }
             if (iter->hashtable->tables[0] == NULL) {
                 /* Empty hashtable. We're done. */
@@ -2370,10 +2370,10 @@ bool hashtableNext(hashtableIterator *iterator, void **elemptr) {
                      * we can do the compaction now when we're done with a
                      * bucket chain, before we move on to the next index. */
                     if (iter->hashtable->pause_rehash == 1 &&
-                        iter->hashtable->used[iter->table] < iter->last_seen_size) {
+                        iter->hashtable->used[iter->table] < iter->u.last_seen_size) {
                         compactBucketChain(iter->hashtable, iter->index, iter->table);
                     }
-                    iter->last_seen_size = iter->hashtable->used[iter->table];
+                    iter->u.last_seen_size = iter->hashtable->used[iter->table];
                 }
                 iter->pos_in_bucket = 0;
                 iter->index++;
