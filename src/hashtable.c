@@ -64,6 +64,7 @@
 #include "mt19937-64.h"
 #include "monotonic.h"
 #include "config.h"
+#include "atomicvar.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -91,8 +92,13 @@ uint64_t siphash_nocase(const uint8_t *in, const size_t inlen, const uint8_t *k)
 /* --- Global variables --- */
 
 static uint8_t hash_function_seed[16];
-static hashtableResizePolicy resize_policy = HASHTABLE_RESIZE_ALLOW;
-static bool hashtable_can_abort_shrink = true;
+static redisAtomic hashtableResizePolicy resize_policy = HASHTABLE_RESIZE_ALLOW;
+
+static inline hashtableResizePolicy getResizePolicy(void) {
+    hashtableResizePolicy p;
+    atomicGet(resize_policy, p);
+    return p;
+}
 
 /* --- Fill factor --- */
 
@@ -172,13 +178,7 @@ uint64_t hashtableGenCaseHashFunction(const char *buf, size_t len) {
  * done.
  */
 void hashtableSetResizePolicy(hashtableResizePolicy policy) {
-    resize_policy = policy;
-}
-
-/* Set whether the hashtable can abort shrinking.
- * Mainly used for debugging and testing. */
-void hashtableSetCanAbortShrink(bool can_abort) {
-    hashtable_can_abort_shrink = can_abort;
+    atomicSet(resize_policy, policy);
 }
 
 /* --- Hash table layout --- */
@@ -744,8 +744,9 @@ static inline bool shouldForceRehash(hashtable *ht) {
 /* Called internally on lookup and other reads to the table. */
 static inline void rehashStepOnReadIfNeeded(hashtable *ht) {
     if (!hashtableIsRehashing(ht) || ht->pause_rehash) return;
-    if (resize_policy == HASHTABLE_RESIZE_FORBID) return;
-    if (resize_policy == HASHTABLE_RESIZE_AVOID && !shouldForceRehash(ht)) return;
+    hashtableResizePolicy rp = getResizePolicy();
+    if (rp == HASHTABLE_RESIZE_FORBID) return;
+    if (rp == HASHTABLE_RESIZE_AVOID && !shouldForceRehash(ht)) return;
     rehashStep(ht);
 }
 
@@ -755,7 +756,7 @@ static inline void rehashStepOnReadIfNeeded(hashtable *ht) {
  * finish rehashing before we need to resize the table again. */
 static inline void rehashStepOnWriteIfNeeded(hashtable *ht) {
     if (!hashtableIsRehashing(ht) || ht->pause_rehash) return;
-    if (resize_policy != HASHTABLE_RESIZE_AVOID) return;
+    if (getResizePolicy() != HASHTABLE_RESIZE_AVOID) return;
     rehashStep(ht);
 }
 
@@ -789,7 +790,7 @@ static bool resize(hashtable *ht, size_t min_capacity, int *malloc_failed) {
         return false;
     }
 
-    if (resize_policy == HASHTABLE_RESIZE_FORBID && ht->tables[0]) {
+    if (getResizePolicy() == HASHTABLE_RESIZE_FORBID && ht->tables[0]) {
         /* Refuse to resize if resizing is forbidden and we already have a primary table. */
         return false;
     }
@@ -1480,8 +1481,9 @@ void hashtableRehashingInfo(hashtable *ht, size_t *from_size, size_t *to_size) {
  * Returns the number of rehashed buckets chains. */
 int hashtableRehashMicroseconds(hashtable *ht, uint64_t us) {
     if (ht->pause_rehash > 0) return 0;
-    if (resize_policy == HASHTABLE_RESIZE_FORBID) return 0;
-    if (resize_policy == HASHTABLE_RESIZE_AVOID && !shouldForceRehash(ht)) return 0;
+    hashtableResizePolicy rp = getResizePolicy();
+    if (rp == HASHTABLE_RESIZE_FORBID) return 0;
+    if (rp == HASHTABLE_RESIZE_AVOID && !shouldForceRehash(ht)) return 0;
 
     monotime timer;
     elapsedStart(&timer);
@@ -1527,7 +1529,7 @@ bool hashtableExpandIfNeeded(hashtable *ht) {
     size_t min_capacity = ht->used[0] + 1;
     size_t num_buckets = numBuckets(ht->bucket_exp[0]);
     size_t current_capacity = num_buckets * ENTRIES_PER_BUCKET;
-    unsigned max_fill_percent = resize_policy == HASHTABLE_RESIZE_ALLOW ? MAX_FILL_PERCENT_SOFT : MAX_FILL_PERCENT_HARD;
+    unsigned max_fill_percent = getResizePolicy() == HASHTABLE_RESIZE_ALLOW ? MAX_FILL_PERCENT_SOFT : MAX_FILL_PERCENT_HARD;
     if (min_capacity * 100 <= current_capacity * max_fill_percent) {
         return false;
     }
@@ -1542,12 +1544,13 @@ bool hashtableShrinkIfNeeded(hashtable *ht) {
     if (hashtableIsRehashing(ht) || ht->pause_auto_shrink) {
         return false;
     }
+    hashtableResizePolicy rp = getResizePolicy();
     /* Don't shrink at all if resize policy is FORBID. */
-    if (resize_policy == HASHTABLE_RESIZE_FORBID) {
+    if (rp == HASHTABLE_RESIZE_FORBID) {
         return false;
     }
     size_t current_capacity = numBuckets(ht->bucket_exp[0]) * ENTRIES_PER_BUCKET;
-    unsigned min_fill_percent = resize_policy == HASHTABLE_RESIZE_ALLOW ? MIN_FILL_PERCENT_SOFT : MIN_FILL_PERCENT_HARD;
+    unsigned min_fill_percent = rp == HASHTABLE_RESIZE_ALLOW ? MIN_FILL_PERCENT_SOFT : MIN_FILL_PERCENT_HARD;
     if (ht->used[0] * 100 > current_capacity * min_fill_percent) {
         return false;
     }
@@ -1564,10 +1567,6 @@ bool hashtableShrinkIfNeeded(hashtable *ht) {
  *
  * Returns true if shrink was aborted, false otherwise. */
 static bool abortShrinkIfNeeded(hashtable *ht) {
-    /* Not allow to abort. */
-    if (!hashtable_can_abort_shrink) {
-        return false;
-    }
     /* Only check during shrink rehashing. */
     if (!hashtableIsRehashing(ht) || ht->bucket_exp[1] >= ht->bucket_exp[0]) {
         return false;
