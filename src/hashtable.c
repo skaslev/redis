@@ -186,7 +186,7 @@ void hashtableSetResizePolicy(hashtableResizePolicy policy) {
 #if SIZE_MAX == UINT64_MAX /* 64-bit version */
 
 #define ENTRIES_PER_BUCKET 7
-#define BUCKET_BITS_TYPE __extension__ uint8_t
+#define BUCKET_BITS_TYPE uint8_t
 #define BITS_NEEDED_TO_STORE_POS_WITHIN_BUCKET 3
 
 /* Selecting the number of buckets.
@@ -222,7 +222,7 @@ void hashtableSetResizePolicy(hashtableResizePolicy policy) {
 #elif SIZE_MAX == UINT32_MAX /* 32-bit version */
 
 #define ENTRIES_PER_BUCKET 12
-#define BUCKET_BITS_TYPE __extension__ uint16_t
+#define BUCKET_BITS_TYPE uint16_t
 #define BITS_NEEDED_TO_STORE_POS_WITHIN_BUCKET 4
 #define BUCKET_FACTOR 3
 #define BUCKET_DIVISOR 32
@@ -233,6 +233,28 @@ void hashtableSetResizePolicy(hashtableResizePolicy policy) {
 #else
 #error "Only 64-bit or 32-bit architectures are supported"
 #endif /* 64-bit vs 32-bit version */
+
+#define BUCKET_BITS_TYPE_EX __extension__ BUCKET_BITS_TYPE
+
+/* --- Branchless unrolling macros --- */
+
+#define HT_CAT(a, b) HT_CAT_(a, b)
+#define HT_CAT_(a, b) a##b
+
+#define HT_REPEAT(n, f, ...) HT_CAT(HT_REPEAT, n)(f, __VA_ARGS__)
+#define HT_REPEAT0(f, ...)
+#define HT_REPEAT1(f, ...)  HT_REPEAT0(f, __VA_ARGS__)  f(0, __VA_ARGS__)
+#define HT_REPEAT2(f, ...)  HT_REPEAT1(f, __VA_ARGS__)  f(1, __VA_ARGS__)
+#define HT_REPEAT3(f, ...)  HT_REPEAT2(f, __VA_ARGS__)  f(2, __VA_ARGS__)
+#define HT_REPEAT4(f, ...)  HT_REPEAT3(f, __VA_ARGS__)  f(3, __VA_ARGS__)
+#define HT_REPEAT5(f, ...)  HT_REPEAT4(f, __VA_ARGS__)  f(4, __VA_ARGS__)
+#define HT_REPEAT6(f, ...)  HT_REPEAT5(f, __VA_ARGS__)  f(5, __VA_ARGS__)
+#define HT_REPEAT7(f, ...)  HT_REPEAT6(f, __VA_ARGS__)  f(6, __VA_ARGS__)
+#define HT_REPEAT8(f, ...)  HT_REPEAT7(f, __VA_ARGS__)  f(7, __VA_ARGS__)
+#define HT_REPEAT9(f, ...)  HT_REPEAT8(f, __VA_ARGS__)  f(8, __VA_ARGS__)
+#define HT_REPEAT10(f, ...) HT_REPEAT9(f, __VA_ARGS__)  f(9, __VA_ARGS__)
+#define HT_REPEAT11(f, ...) HT_REPEAT10(f, __VA_ARGS__) f(10, __VA_ARGS__)
+#define HT_REPEAT12(f, ...) HT_REPEAT11(f, __VA_ARGS__) f(11, __VA_ARGS__)
 
 static_assert(100 * BUCKET_DIVISOR / BUCKET_FACTOR / ENTRIES_PER_BUCKET <= MAX_FILL_PERCENT_SOFT,
               "Expand must result in a fill below the soft max fill factor");
@@ -315,8 +337,8 @@ static_assert(MAX_FILL_PERCENT_SOFT <= MAX_FILL_PERCENT_HARD, "Soft vs hard fill
  */
 
 typedef struct hashtableBucket {
-    BUCKET_BITS_TYPE chained : 1;
-    BUCKET_BITS_TYPE presence : ENTRIES_PER_BUCKET;
+    BUCKET_BITS_TYPE_EX chained : 1;
+    BUCKET_BITS_TYPE_EX presence : ENTRIES_PER_BUCKET;
     uint8_t hashes[ENTRIES_PER_BUCKET];
     void *entries[ENTRIES_PER_BUCKET];
 } bucket;
@@ -379,8 +401,9 @@ typedef struct {
         HASHTABLE_FOUND,
         HASHTABLE_NOT_FOUND
     } state;
-    short table;
-    short pos;
+    int8_t table;
+    int8_t pos;
+    BUCKET_BITS_TYPE candidates;
     hashtable *hashtable;
     bucket *bucket;
     const void *key;
@@ -864,6 +887,25 @@ static inline int checkCandidateInBucket(hashtable *ht, bucket *b, int pos, cons
     return 0;
 }
 
+static inline BUCKET_BITS_TYPE findHashMatches(uint8_t *hashes, uint8_t h2) {
+#define HASH_MATCH_BIT(i, _) | (BUCKET_BITS_TYPE)((hashes[i] == h2) << i)
+    return (BUCKET_BITS_TYPE)0 HT_REPEAT(ENTRIES_PER_BUCKET, HASH_MATCH_BIT, _);
+#undef HASH_MATCH_BIT
+}
+
+#if !defined(HAVE_X86_SIMD) && !(defined(HAVE_ARM_NEON) && ENTRIES_PER_BUCKET <= 8)
+static int findKeyInBucketScalar(hashtable *ht, bucket *b, uint8_t h2, const void *key, int table, int *pos_in_bucket, int *table_index) {
+    BUCKET_BITS_TYPE match = findHashMatches(b->hashes, h2);
+    BUCKET_BITS_TYPE candidates = b->presence & match;
+    while (candidates) {
+        int pos = __builtin_ctz(candidates);
+        if (checkCandidateInBucket(ht, b, pos, key, table, pos_in_bucket, table_index)) return 1;
+        candidates &= candidates - 1;
+    }
+    return 0;
+}
+#endif
+
 #if defined(HAVE_X86_SIMD)
 ATTRIBUTE_TARGET_SSE2
 static int findKeyInBucketSSE2(hashtable *ht, bucket *b, uint8_t h2, const void *key, int table, int *pos_in_bucket, int *table_index) {
@@ -951,11 +993,7 @@ static bucket *findBucket(hashtable *ht, uint64_t hash, const void *key, int *po
 #elif defined(HAVE_ARM_NEON) && ENTRIES_PER_BUCKET <= 8
             if (findKeyInBucketNeon(ht, b, h2, key, table, pos_in_bucket, table_index)) return b;
 #else
-            /* Find candidate entries with presence flag set and matching h2 hash. */
-            for (int pos = 0; pos < numBucketPositions(b); pos++) {
-                if (isPositionFilled(b, pos) && b->hashes[pos] == h2 &&
-                    checkCandidateInBucket(ht, b, pos, key, table, pos_in_bucket, table_index)) return b;
-            }
+            if (findKeyInBucketScalar(ht, b, h2, key, table, pos_in_bucket, table_index)) return b;
 #endif
             b = getChildBucket(b);
         } while (b != NULL);
@@ -1976,18 +2014,19 @@ bool hashtableIncrementalFindStep(hashtableIncrementalFindState *state) {
     case HASHTABLE_NEXT_ENTRY:
         /* Current bucket is prefetched. Prefetch next potential
          * matching entry in the current bucket. */
-        if (data->bucket->presence != 0 && data->pos < numBucketPositions(data->bucket)) {
-            bucket *b = data->bucket;
-            uint8_t h2 = highBits(data->hash);
-            for (int pos = data->pos; pos < numBucketPositions(b); pos++) {
-                if (isPositionFilled(b, pos) && b->hashes[pos] == h2) {
-                    /* It's a candidate. */
-                    redis_prefetch_read(b->entries[pos]);
-                    data->pos = pos;
-                    data->state = HASHTABLE_CHECK_ENTRY;
-                    return true;
-                }
-            }
+        if (data->candidates == 0) {
+            BUCKET_BITS_TYPE match = findHashMatches(data->bucket->hashes, highBits(data->hash));
+            data->candidates = data->bucket->presence & match;
+            data->candidates >>= data->pos;
+            data->candidates <<= data->pos;
+        }
+        if (data->candidates) {
+            int pos = __builtin_ctz(data->candidates);
+            data->candidates &= data->candidates - 1;
+            redis_prefetch_read(data->bucket->entries[pos]);
+            data->pos = pos;
+            data->state = HASHTABLE_CHECK_ENTRY;
+            return true;
         }
         /* fall through */
     case HASHTABLE_NEXT_BUCKET:
@@ -2021,6 +2060,7 @@ bool hashtableIncrementalFindStep(hashtableIncrementalFindState *state) {
             redis_prefetch_read(data->bucket);
             data->state = HASHTABLE_NEXT_ENTRY;
             data->pos = 0;
+            data->candidates = 0;
         }
         return true;
     case HASHTABLE_FOUND:
