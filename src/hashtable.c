@@ -647,10 +647,11 @@ static void rehashStepFinalize(hashtable *ht) {
 static bucket *fetchEntriesForExpand(bucket *b, void *buf[], int *size, int max_bucket_count) {
     *size = 0;
     for (int idx = 0; idx < max_bucket_count && b != NULL; idx += 1) {
-        for (int pos = 0; pos < numBucketPositions(b); pos++) {
-            if (!isPositionFilled(b, pos)) continue; /* empty */
-            buf[*size] = b->entries[pos];
-            (*size)++;
+        BUCKET_BITS_TYPE present = b->presence;
+        while (present) {
+            int pos = __builtin_ctz(present);
+            present &= present - 1;
+            buf[(*size)++] = b->entries[pos];
         }
         b = getChildBucket(b);
     }
@@ -685,15 +686,11 @@ static void rehashStepExpand(hashtable *ht) {
 
 /* Rehashes a bucket during table shrinkage. */
 static void rehashBucketShrink(hashtable *ht, bucket *b) {
-    for (int pos = 0; pos < numBucketPositions(b); pos++) {
-        if (!isPositionFilled(b, pos)) continue; /* empty */
-        void *entry = b->entries[pos];
-        uint8_t h2 = b->hashes[pos];
-        /* When shrinking, it's possible to avoid computing the hash. We can
-         * just use idx has the hash. */
-        uint64_t hash = ht->rehash_idx;
-        /* Reinsert the entry into the new table using the derived hash. */
-        rehashEntry(ht, entry, hash, h2);
+    BUCKET_BITS_TYPE present = b->presence;
+    while (present) {
+        int pos = __builtin_ctz(present);
+        present &= present - 1;
+        rehashEntry(ht, b->entries[pos], ht->rehash_idx, b->hashes[pos]);
     }
 }
 
@@ -1223,11 +1220,11 @@ static inline incrementalFind *incrementalFindFromOpaque(hashtableIncrementalFin
 
 /* Prefetches all filled entries in the given bucket to optimize future memory access. */
 static void prefetchBucketEntries(bucket *b) {
-    if (!b->presence) return;
-    for (int pos = 0; pos < numBucketPositions(b); pos++) {
-        if (isPositionFilled(b, pos)) {
-            redis_prefetch_read(b->entries[pos]);
-        }
+    BUCKET_BITS_TYPE present = b->presence;
+    while (present) {
+        int pos = __builtin_ctz(present);
+        present &= present - 1;
+        redis_prefetch_read(b->entries[pos]);
     }
 }
 
@@ -1274,10 +1271,11 @@ static void prefetchNextBucketEntries(iter *iter, bucket *current_bucket) {
 static void prefetchBucketValues(bucket *b, hashtable *ht) {
     if (!b->presence) return;
     assert(ht->type->entryPrefetchValue != NULL);
-    for (int pos = 0; pos < numBucketPositions(b); pos++) {
-        if (isPositionFilled(b, pos)) {
-            ht->type->entryPrefetchValue(b->entries[pos]);
-        }
+    BUCKET_BITS_TYPE present = b->presence;
+    while (present) {
+        int pos = __builtin_ctz(present);
+        present &= present - 1;
+        ht->type->entryPrefetchValue(b->entries[pos]);
     }
 }
 
@@ -1871,9 +1869,11 @@ bool hashtableReplaceReallocatedEntry(hashtable *ht, const void *old_entry, void
         }
         bucket *b = &ht->tables[table][bucket_idx];
         do {
-            for (int pos = 0; pos < numBucketPositions(b); pos++) {
-                if (isPositionFilled(b, pos) && b->hashes[pos] == h2 && b->entries[pos] == old_entry) {
-                    /* It's a match. */
+            BUCKET_BITS_TYPE candidates = b->presence & findHashMatches(b->hashes, h2);
+            while (candidates) {
+                int pos = __builtin_ctz(candidates);
+                candidates &= candidates - 1;
+                if (b->entries[pos] == old_entry) {
                     b->entries[pos] = new_entry;
                     return true;
                 }
