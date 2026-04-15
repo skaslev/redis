@@ -191,6 +191,15 @@ start_server {tags {"modules external:skip debug_defrag:skip"}} {
                         fail "Master <-> Replica didn't start the full sync"
                     }
 
+                    # Wait for the replica to finish the full sync before
+                    # querying it, otherwise we may get a -LOADING error
+                    # that wait_for_condition propagates immediately.
+                    wait_for_condition 100 100 {
+                        [status $replica master_link_status] eq "up"
+                    } else {
+                        fail "Replica didn't finish the full sync"
+                    }
+
                     wait_for_condition 100 100 {
                         [$replica get x] == 10000
                     } else {
