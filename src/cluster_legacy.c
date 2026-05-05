@@ -2715,7 +2715,9 @@ void clusterProcessPingExtensions(clusterMsg *hdr, clusterLink *link) {
             ext_shardid = shardid_ext->shard_id;
         } else if (type == CLUSTERMSG_EXT_TYPE_INTERNALSECRET) {
             clusterMsgPingExtInternalSecret *internal_secret_ext = (clusterMsgPingExtInternalSecret *) &(ext->ext[0].internal_secret);
-            if (memcmp(server.cluster->internal_secret, internal_secret_ext->internal_secret, CLUSTER_INTERNALSECRETLEN) > 0 ) {
+            if (!link->inbound && link->node && !nodeInHandshake(link->node) &&
+                memcmp(server.cluster->internal_secret, internal_secret_ext->internal_secret, CLUSTER_INTERNALSECRETLEN) > 0)
+            {
                 memcpy(server.cluster->internal_secret, internal_secret_ext->internal_secret, CLUSTER_INTERNALSECRETLEN);
             }
         } else {
