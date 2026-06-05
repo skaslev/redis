@@ -1235,6 +1235,12 @@ size_t kvobjComputeSize(robj *key, kvobj *o, size_t sample_size, int dbid) {
     serverPanic("Unknown object type");
 }
 
+/* Returns the size in bytes consumed by the object header, key and value in RAM.
+ * Note that the returned value is accurate approximation of the actual allocated
+ * size. For performance reasons it accumulates requested size instead in several
+ * cases (e.g. kvobj allocation, type 5 sds, listpacks, etc) but it does so in a
+ * self-consistent way.
+ */
 size_t kvobjAllocSize(kvobj *o) {
     debugServerAssert(o->iskvobj);
     size_t asize = sizeof(kvobj);
