@@ -1508,6 +1508,22 @@ void cronUpdateMemoryStats(void) {
                                                 &server.cron_malloc_stats.lua_allocator_resident,
                                                 &server.cron_malloc_stats.lua_allocator_frag_smallbins_bytes);
         }
+        /* Publish the just-measured (Lua-arena-subtracted) fragmentation
+         * values into the defrag-side tick-local cache so
+         * computeDefragCycles() later this tick can skip its own
+         * duplicate jemalloc measurement. Mirrors
+         * getAllocatorFragmentation()'s Lua subtraction so the cached
+         * value matches the fall-through real measurement exactly.
+         * Publishing with allocated==0 leaves the cache invalid
+         * (sentinel set inside the publish) — defrag should decide on
+         * real data or none. */
+        size_t frag  = server.cron_malloc_stats.allocator_frag_smallbins_bytes;
+        size_t alloc = server.cron_malloc_stats.allocator_allocated;
+        if (alloc > 0 && server.lua_arena != UINT_MAX) {
+            frag  -= server.cron_malloc_stats.lua_allocator_frag_smallbins_bytes;
+            alloc -= server.cron_malloc_stats.lua_allocator_allocated;
+        }
+        defragFragCachePut(frag, alloc);
         /* in case the allocator isn't providing these stats, fake them so that
          * fragmentation info still shows some (inaccurate metrics) */
         if (!server.cron_malloc_stats.allocator_resident)
@@ -2374,6 +2390,7 @@ void initServerConfig(void) {
                                       updated later after loading the config.
                                       This value may be used before the server
                                       is initialized. */
+    server.defrag_frag_cache.cronloops = -1; /* Mark the defrag fragmentation cache as stale */
     server.timezone = getTimeZone(); /* Initialized by tzset(). */
     server.configfile = NULL;
     server.executable = NULL;
