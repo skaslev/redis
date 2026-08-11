@@ -2300,6 +2300,15 @@ start_cluster 3 3 {tags {external:skip cluster} overrides {cluster-node-timeout 
                 fail "trim failed"
             }
 
+            # Wait for the fullsync to complete before changing repl-diskless-load,
+            # it is a DENY_LOADING_CONFIG so CONFIG SET replies -LOADING while the
+            # replica is still loading the RDB.
+            wait_for_condition 1000 10 {
+                [status [Rn 3] master_link_status] eq "up"
+            } else {
+                fail "replica didn't finish fullsync in time"
+            }
+
             R 3 debug asm-trim-method active 0
             R 3 config set repl-diskless-load disabled
             R 0 CLUSTER MIGRATION IMPORT 0 0
