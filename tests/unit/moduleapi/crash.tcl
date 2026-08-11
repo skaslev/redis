@@ -23,8 +23,11 @@ if {!$::valgrind && !$::tsan} {
             assert_equal 2 [count_log_message 0 "ASSERTION FAILED"]
             if {$backtrace_supported} {
                 # Make sure the crash trace is printed twice. There will be 3 instances of,
-                # assertCrash 1 in the first stack trace and 2 in the second.
-                assert_equal 3 [count_log_message 0 "assertCrash"]
+                # assertCrash 1 in the first stack trace and 2 in the second. On some
+                # platforms (e.g. ARM) backtrace() may fail to unwind through the nested
+                # signal handler frames and drop an occurrence from the second trace, so
+                # accept 2 as well.
+                assert_morethan_equal [count_log_message 0 "assertCrash"] 2
             }
             assert_equal 1 [count_log_message 0 "RECURSIVE ASSERTION FAILED"]
             assert_equal 1 [count_log_message 0 "=== REDIS BUG REPORT START: Cut & paste starting from here ==="]
@@ -53,9 +56,12 @@ if {!$::valgrind && !$::tsan} {
             assert_equal 1 [count_log_message 0 "Crashed running signal handler. Providing reduced version of recursive crash report"]
             if {$backtrace_supported} {
                 assert_equal 2 [count_log_message 0 "Crashed running the instruction at"]
-                # Make sure the crash trace is printed twice. There will be 3 instances of 
-                # modulesCollectInfo, 1 in the first stack trace and 2 in the second.
-                assert_equal 3 [count_log_message 0 "modulesCollectInfo"]
+                # Make sure the crash trace is printed twice. There will be 3 instances of
+                # modulesCollectInfo, 1 in the first stack trace and 2 in the second. On
+                # some platforms (e.g. ARM) backtrace() may fail to unwind through the
+                # nested signal handler frames and drop an occurrence from the second
+                # trace, so accept 2 as well.
+                assert_morethan_equal [count_log_message 0 "modulesCollectInfo"] 2
             }
             assert_equal 1 [count_log_message 0 "=== REDIS BUG REPORT START: Cut & paste starting from here ==="]
         }
