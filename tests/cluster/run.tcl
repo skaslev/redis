@@ -23,6 +23,7 @@ proc main {} {
         "enable-protected-configs yes"
         "enable-debug-command yes"
         "save ''"
+        "cluster-internal-secret 0123456789abcdef0123456789abcdef01234567"
     }
     run_tests
     cleanup

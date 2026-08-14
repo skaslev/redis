@@ -19,7 +19,7 @@ proc write_keys_to_master0 {} {
 tags {tls:skip external:skip cluster} {
 
 # start three servers
-set base_conf [list cluster-enabled yes cluster-node-timeout 1000]
+set base_conf [list cluster-enabled yes cluster-node-timeout 1000 cluster-internal-secret "0123456789abcdef0123456789abcdef01234567"]
 start_multiple_servers 3 [list overrides $base_conf] {
 
     set node1 [srv 0 client]

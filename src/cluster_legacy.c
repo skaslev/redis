@@ -1044,8 +1044,6 @@ void clusterInit(void) {
     clusterUpdateMyselfIp();
     clusterUpdateMyselfHostname();
     clusterUpdateMyselfHumanNodename();
-
-    getRandomHexChars(server.cluster->internal_secret, CLUSTER_INTERNALSECRETLEN);
 }
 
 void clusterInitLast(void) {
@@ -1622,12 +1620,23 @@ clusterNode *clusterLookupNode(const char *name, int length) {
     return dictGetVal(de);
 }
 
+/* Return the shared secret used for internal-connection authentication, or NULL
+ * if none is configured. The secret is an operator-provided, out-of-band
+ * credential that must be identical on every node; it is never generated
+ * locally nor learned over the (unauthenticated) cluster bus. When the
+ * dedicated cluster-internal-secret is unset we fall back to masterauth. */
 const char *clusterGetSecret(size_t *len) {
     if (!server.cluster) {
         return NULL;
     }
-    *len = CLUSTER_INTERNALSECRETLEN;
-    return server.cluster->internal_secret;
+    sds secret = server.cluster_internal_secret;
+    if (secret == NULL) secret = server.masterauth;
+    if (secret == NULL) {
+        *len = 0;
+        return NULL;
+    }
+    *len = sdslen(secret);
+    return secret;
 }
 
 /* Get all the nodes in my shard.
@@ -2600,10 +2609,6 @@ uint32_t getShardIdPingExtSize(void) {
     return getAlignedPingExtSize(sizeof(clusterMsgPingExtShardId));
 }
 
-uint32_t getInternalSecretPingExtSize(void) {
-    return getAlignedPingExtSize(sizeof(clusterMsgPingExtInternalSecret));
-}
-
 uint32_t getForgottenNodeExtSize(void) {
     return getAlignedPingExtSize(sizeof(clusterMsgPingExtForgottenNode));
 }
@@ -2697,16 +2702,10 @@ uint32_t writePingExt(clusterMsg *hdr, int gossipcount)  {
     totlen += getShardIdPingExtSize();
     extensions++;
 
-    /* Populate internal secret */
-    if (cursor != NULL) {
-        clusterMsgPingExtInternalSecret *ext = preparePingExt(cursor, CLUSTERMSG_EXT_TYPE_INTERNALSECRET, getInternalSecretPingExtSize());
-        memcpy(ext->internal_secret, server.cluster->internal_secret, CLUSTER_INTERNALSECRETLEN);
-
-        /* Move the write cursor */
-        cursor = nextPingExt(cursor);
-    }
-    totlen += getInternalSecretPingExtSize();
-    extensions++;
+    /* Note: the internal secret is intentionally NOT sent over the cluster bus.
+     * It is an operator-configured, out-of-band credential (see clusterGetSecret).
+     * CLUSTERMSG_EXT_TYPE_INTERNALSECRET remains a reserved protocol type but is
+     * never emitted, and any received one is ignored. */
 
     if (hdr != NULL) {
         hdr->extensions = htons(extensions);
@@ -2750,10 +2749,10 @@ void clusterProcessPingExtensions(clusterMsg *hdr, clusterLink *link) {
             clusterMsgPingExtShardId *shardid_ext = (clusterMsgPingExtShardId *) &(ext->ext[0].shard_id);
             ext_shardid = shardid_ext->shard_id;
         } else if (type == CLUSTERMSG_EXT_TYPE_INTERNALSECRET) {
-            clusterMsgPingExtInternalSecret *internal_secret_ext = (clusterMsgPingExtInternalSecret *) &(ext->ext[0].internal_secret);
-            if (memcmp(server.cluster->internal_secret, internal_secret_ext->internal_secret, CLUSTER_INTERNALSECRETLEN) > 0 ) {
-                memcpy(server.cluster->internal_secret, internal_secret_ext->internal_secret, CLUSTER_INTERNALSECRETLEN);
-            }
+            /* Reserved but deprecated: the internal secret is an operator-
+             * configured, out-of-band credential and is never adopted from the
+             * unauthenticated cluster bus. Ignore any secret a peer sends
+             * (e.g. an older node during a rolling upgrade). */
         } else {
             /* Unknown type, we will ignore it but log what happened. */
             serverLog(LL_VERBOSE, "Received unknown extension type %d", type);
@@ -2895,14 +2894,11 @@ int clusterProcessPacket(clusterLink *link) {
                             clusterGetMessageTypeString(type), exttype);
                         return 1;
                     }
-                } else if (exttype == CLUSTERMSG_EXT_TYPE_INTERNALSECRET) {
-                    if (datalen < sizeof(clusterMsgPingExtInternalSecret)) {
-                        serverLog(LL_WARNING,
-                            "Received %s packet with truncated extension type %d",
-                            clusterGetMessageTypeString(type), exttype);
-                        return 1;
-                    }
                 }
+                /* CLUSTERMSG_EXT_TYPE_INTERNALSECRET needs no type-specific
+                 * validation: its content is never read (see
+                 * clusterProcessPingExtensions). The generic length/alignment
+                 * checks above are sufficient to skip over it safely. */
                 explen += extlen;
                 ext = getNextPingExt(ext);
             }

@@ -2636,6 +2636,10 @@ struct redisServer {
     mstime_t cluster_node_timeout; /* Cluster node timeout. */
     mstime_t cluster_ping_interval;    /* A debug configuration for setting how often cluster nodes send ping messages. */
     char *cluster_configfile; /* Cluster auto-generated config file name. */
+    sds cluster_internal_secret; /* Operator-configured shared secret for internal
+                                    connection auth (AUTH "internal connection").
+                                    Must match on all nodes. NULL falls back to
+                                    masterauth; if both unset, internal auth is off. */
     long long asm_handoff_max_lag_bytes; /* Maximum lag in bytes before pausing writes for ASM handoff. */
     long long asm_write_pause_timeout; /* Timeout in milliseconds to pause writes during ASM handoff. */
     long long asm_sync_buffer_drain_timeout; /* Timeout in milliseconds for sync buffer to drain during ASM. */

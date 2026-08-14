@@ -1344,7 +1344,13 @@ void asmCallbackOnFreeClient(client *c) {
 char *asmSendInternalAuth(connection *conn) {
     size_t len = 0;
     const char *internal_secret = clusterGetSecret(&len);
-    serverAssert(internal_secret != NULL);
+    if (internal_secret == NULL) {
+        /* No shared secret configured: this node cannot authenticate the slot
+         * migration connection to the source. The operator must set
+         * cluster-internal-secret (or masterauth) identically on all nodes. */
+        return sdsnew("internal connection auth is not configured on this node "
+                      "(set cluster-internal-secret)");
+    }
 
     sds secret = sdsnewlen(internal_secret, len);
     char *err = sendCommand(conn, "AUTH", "internal connection", secret, NULL);

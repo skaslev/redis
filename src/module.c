@@ -14715,7 +14715,8 @@ int RM_RdbSave(RedisModuleCtx *ctx, RedisModuleRdbStream *stream, int flags) {
     return REDISMODULE_OK;
 }
 
-/* Returns the internal secret of the cluster.
+/* Returns the internal secret of the cluster, or NULL (with *len set to 0) when
+ * none is configured (neither cluster-internal-secret nor masterauth is set).
  * Should be used to authenticate as an internal connection to a node in the
  * cluster, and by that gain the permissions to execute internal commands.
  */

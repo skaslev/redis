@@ -3327,9 +3327,16 @@ static void internalAuth(client *c) {
 
     sds password = c->argv[2]->ptr;
 
-    /* Get internal secret. */
-    size_t len = -1;
+    /* Get internal secret. When none is configured (neither cluster-internal-secret
+     * nor masterauth), internal-connection auth is unavailable: reject rather than
+     * risk matching an empty/zero-length password. */
+    size_t len = 0;
     const char *internal_secret = clusterGetSecret(&len);
+    if (internal_secret == NULL) {
+        addReplyError(c, "-WRONGPASS internal connection auth is not configured "
+                         "(set cluster-internal-secret)");
+        return;
+    }
     if (sdslen(password) != len) {
         addReplyError(c, "-WRONGPASS invalid internal password");
         return;

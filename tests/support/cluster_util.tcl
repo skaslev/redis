@@ -179,7 +179,10 @@ proc start_cluster {masters replicas options code {slot_allocator continuous_slo
 
     # Configure the starting of multiple servers. Set cluster node timeout
     # aggressively since many tests depend on ping/pong messages. 
-    set cluster_options [list overrides [list cluster-enabled yes cluster-ping-interval 100 cluster-node-timeout 3000 cluster-slot-stats-enabled yes]]
+    # cluster-internal-secret must be identical on all nodes for internal-connection
+    # auth and atomic slot migration (ASM) to work; it is no longer negotiated over
+    # the cluster bus. Set a fixed shared value for the whole test cluster.
+    set cluster_options [list overrides [list cluster-enabled yes cluster-ping-interval 100 cluster-node-timeout 3000 cluster-slot-stats-enabled yes cluster-internal-secret "0123456789abcdef0123456789abcdef01234567"]]
     set options [concat $cluster_options $options]
 
     # Cluster mode only supports a single database, so before executing the tests

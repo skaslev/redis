@@ -151,12 +151,16 @@ typedef enum {
     CLUSTERMSG_EXT_TYPE_HUMAN_NODENAME,
     CLUSTERMSG_EXT_TYPE_FORGOTTEN_NODE,
     CLUSTERMSG_EXT_TYPE_SHARDID,
+    /* Reserved. The internal secret was previously propagated over the cluster
+     * bus using this extension type. It is now an operator-configured, out-of-
+     * band credential (see clusterGetSecret) and is never sent nor adopted; the
+     * type is kept reserved so older nodes' packets are recognized and ignored
+     * rather than logged as unknown. */
     CLUSTERMSG_EXT_TYPE_INTERNALSECRET,
 } clusterMsgPingtypes;
 
 /* Helper function for making sure extensions are eight byte aligned. */
 #define EIGHT_BYTE_ALIGN(size) ((((size) + 7) / 8) * 8)
-#define CLUSTER_INTERNALSECRETLEN 40      /* sha1 hex length */
 
 typedef struct {
     char hostname[1]; /* The announced hostname, ends with \0. */
@@ -178,10 +182,6 @@ typedef struct {
 } clusterMsgPingExtShardId;
 
 typedef struct {
-    char internal_secret[CLUSTER_INTERNALSECRETLEN]; /* Current shard internal secret */
-} clusterMsgPingExtInternalSecret;
-
-typedef struct {
     uint32_t length; /* Total length of this extension message (including this header) */
     uint16_t type; /* Type of this extension message (see clusterMsgPingExtTypes) */
     uint16_t unused; /* 16 bits of padding to make this structure 8 byte aligned. */
@@ -190,7 +190,6 @@ typedef struct {
         clusterMsgPingExtHumanNodename human_nodename;
         clusterMsgPingExtForgottenNode forgotten_node;
         clusterMsgPingExtShardId shard_id;
-        clusterMsgPingExtInternalSecret internal_secret;
     } ext[]; /* Actual extension information, formatted so that the data is 8
               * byte aligned, regardless of its content. */
 } clusterMsgPingExt;
@@ -343,7 +342,6 @@ struct clusterState {
     clusterNode *migrating_slots_to[CLUSTER_SLOTS];
     clusterNode *importing_slots_from[CLUSTER_SLOTS];
     clusterNode *slots[CLUSTER_SLOTS];
-    char internal_secret[CLUSTER_INTERNALSECRETLEN];
     /* The following fields are used to take the slave state on elections. */
     mstime_t failover_auth_time; /* Time of previous or next election. */
     int failover_auth_count;    /* Number of votes received so far. */
