@@ -3051,6 +3051,7 @@ typedef enum {
     JSON_TYPE_BOOLEAN,
     JSON_TYPE_OBJECT,
     JSON_TYPE_ARRAY,
+    JSON_TYPE_STRING_ARRAY,
 } jsonType;
 
 typedef struct jsonObjectElement {
@@ -3065,6 +3066,10 @@ typedef struct jsonObjectElement {
             struct jsonObject **objects;
             int length;
         } array;
+        struct {
+            const char **strings;
+            int length;
+        } string_array;
     } value;
 } jsonObjectElement;
 
