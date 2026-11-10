@@ -41,12 +41,32 @@
                     "description": "Total number of non-empty elements."
                 },
                 "len": {
-                    "type": "integer",
-                    "description": "Logical length (highest index + 1)."
+                    "description": "Logical length (highest index + 1).",
+                    "title": "UnsignedInteger",
+                    "oneOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "description": "Above 9223372036854775807: a big number (a bulk string in RESP2).",
+                            "type": "string",
+                            "pattern": "^[0-9]+$"
+                        }
+                    ]
                 },
                 "next-insert-index": {
-                    "type": "integer",
-                    "description": "Index the next ARINSERT would use, or 0 if unset/exhausted."
+                    "description": "Index the next ARINSERT would use, or 0 if unset/exhausted.",
+                    "title": "UnsignedInteger",
+                    "oneOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "description": "Above 9223372036854775807: a big number (a bulk string in RESP2).",
+                            "type": "string",
+                            "pattern": "^[0-9]+$"
+                        }
+                    ]
                 },
                 "slices": {
                     "type": "integer",

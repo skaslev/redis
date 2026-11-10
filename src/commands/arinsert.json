@@ -36,7 +36,17 @@
         ],
         "reply_schema": {
             "description": "The last index where a value was inserted.",
-            "type": "integer"
+            "title": "UnsignedInteger",
+            "oneOf": [
+                {
+                    "type": "integer"
+                },
+                {
+                    "description": "Above 9223372036854775807: a big number (a bulk string in RESP2).",
+                    "type": "string",
+                    "pattern": "^[0-9]+$"
+                }
+            ]
         },
         "arguments": [
             {

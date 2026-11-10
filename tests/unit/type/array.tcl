@@ -571,6 +571,30 @@ start_server {
         assert_equal 101 [dict get $info len]
     }
 
+    test {Indexes beyond the signed 64-bit range} {
+        # Above LLONG_MAX, replies hold indexes as big numbers (RESP3) or
+        # bulk strings (RESP2).
+        set idx 9223372036854775808
+        set next [expr {$idx + 1}]
+        r del myarray
+        r arset myarray $idx a
+        assert_equal $next [r arlen myarray]
+        assert_equal [list [list $idx a]] [r arscan myarray $idx $idx]
+        assert_equal [list $idx] [r argrep myarray $idx $idx EXACT a]
+        assert_equal [list [list $idx a]] [r argrep myarray $idx $idx EXACT a WITHVALUES]
+
+        r del myarray
+        r arinsert myarray a
+        assert_equal 1 [r arseek myarray $idx]
+        assert_equal $idx [r arnext myarray]
+        assert_equal $idx [r arinsert myarray b]
+        assert_equal $next [r arnext myarray]
+
+        set info [r arinfo myarray]
+        assert_equal $next [dict get $info len]
+        assert_equal $next [dict get $info next-insert-index]
+    }
+
     # Type check tests
     test {Array commands on wrong type} {
         r del mykey
