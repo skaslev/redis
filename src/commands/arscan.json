@@ -41,8 +41,18 @@
                 "maxItems": 2,
                 "items": [
                     {
-                        "type": "integer",
-                        "description": "Index of existing element"
+                        "description": "Index of existing element",
+                        "title": "UnsignedInteger",
+                        "oneOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "description": "Above 9223372036854775807: a big number (a bulk string in RESP2).",
+                                "type": "string",
+                                "pattern": "^[0-9]+$"
+                            }
+                        ]
                     },
                     {
                         "type": "string",

@@ -40,6 +40,11 @@
                     "type": "integer"
                 },
                 {
+                    "description": "Above 9223372036854775807: a big number (a bulk string in RESP2).",
+                    "type": "string",
+                    "pattern": "^[0-9]+$"
+                },
+                {
                     "description": "Null when the insertion cursor is exhausted (next insert would overflow).",
                     "type": "null"
                 }
