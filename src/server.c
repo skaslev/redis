@@ -5813,6 +5813,11 @@ void addReplyJson(client *c, struct jsonObject *rs) {
                 addReplyJson(c, object);
             }
             break;
+        case (JSON_TYPE_STRING_ARRAY):
+            addReplyArrayLen(c, curr->value.string_array.length);
+            for (int k = 0; k < curr->value.string_array.length; k++)
+                addReplyBulkCString(c, curr->value.string_array.strings[k]);
+            break;
         default:
             serverPanic("Invalid JSON type %d", curr->type);
         }

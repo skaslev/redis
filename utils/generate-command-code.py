@@ -248,6 +248,10 @@ def to_c_name(str):
         .replace("\\", "_").replace("+", "_")
 
 
+def is_string_array(v):
+    return isinstance(v, list) and len(v) > 0 and all(isinstance(s, str) for s in v)
+
+
 class ReplySchema(object):
     def __init__(self, name, desc):
         self.name = to_c_name(name)
@@ -263,6 +267,9 @@ class ReplySchema(object):
         for k, v in desc.items():
             if isinstance(v, dict):
                 self.schema[k] = ReplySchema("%s_%s" % (self.name, k), v)
+            elif is_string_array(v):
+                # e.g. "required": ["field1", "field2"]
+                self.schema[k] = v
             elif isinstance(v, list):
                 self.schema[k] = []
                 for i, subdesc in enumerate(v):
@@ -275,6 +282,9 @@ class ReplySchema(object):
             if isinstance(v, ReplySchema):
                 t = "JSON_TYPE_OBJECT"
                 vstr = ".value.object=&%s" % name
+            elif is_string_array(v):
+                t = "JSON_TYPE_STRING_ARRAY"
+                vstr = ".value.string_array={.strings=%s,.length=%d}" % (name, len(v))
             elif isinstance(v, list):
                 t = "JSON_TYPE_ARRAY"
                 vstr = ".value.array={.objects=%s,.length=%d}" % (name, len(v))
@@ -293,6 +303,10 @@ class ReplySchema(object):
         for k, v in self.schema.items():
             if isinstance(v, ReplySchema):
                 v.write(f)
+            elif is_string_array(v):
+                name = to_c_name("%s_%s" % (self.name, k))
+                f.write("/* %s string array reply schema */\n" % name)
+                f.write("const char *%s[] = {%s};\n\n" % (name, ",".join(json.dumps(s) for s in v)))
             elif isinstance(v, list):
                 for i, schema in enumerate(v):
                     schema.write(f)
