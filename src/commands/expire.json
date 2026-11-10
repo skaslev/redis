@@ -43,10 +43,12 @@
             "oneOf": [
                 {
                     "description": "The timeout was not set. e.g. key doesn't exist, or operation skipped due to the provided arguments.",
+                    "type": "integer",
                     "const": 0
                 },
                 {
                     "description": "The timeout was set.",
+                    "type": "integer",
                     "const": 1
                 }
             ]

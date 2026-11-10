@@ -136,6 +136,7 @@
                         "items": {
                             "oneOf": [
                                 {
+                                    "title": "StreamEntry",
                                     "description": "Entry without CLAIM option",
                                     "type": "array",
                                     "minItems": 2,
@@ -163,6 +164,7 @@
                                     ]
                                 },
                                 {
+                                    "title": "ClaimedStreamEntry",
                                     "description": "Entry with CLAIM option - includes elapsed milliseconds and delivery count",
                                     "type": "array",
                                     "minItems": 4,

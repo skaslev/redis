@@ -19,6 +19,7 @@
             "RESPONSE_POLICY:ONE_SUCCEEDED"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK"
         }
     }

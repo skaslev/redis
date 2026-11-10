@@ -43,18 +43,22 @@
                 "oneOf": [
                     {
                         "description": "The member does not exist.",
+                        "type": "integer",
                         "const": -2
                     },
                     {
                         "description": "Specified NX | XX | GT | LT condition not met",
+                        "type": "integer",
                         "const": 0
                     },
                     {
                         "description": "Expiration time was set or updated.",
+                        "type": "integer",
                         "const": 1
                     },
                     {
                         "description": "Member deleted because the specified expiration time is in the past.",
+                        "type": "integer",
                         "const": 2
                     }
                 ]

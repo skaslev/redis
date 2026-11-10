@@ -35,10 +35,12 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "type": "integer",
                     "const": 0,
                     "description": "The element is not a member of the set, or the key does not exist."
                 },
                 {
+                    "type": "integer",
                     "const": 1,
                     "description": "The element is a member of the set."
                 }

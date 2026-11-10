@@ -18,6 +18,7 @@
             "type": "array",
             "description": "Returns information about the modules loaded to the server.",
             "items": {
+                "title": "ModuleInfo",
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -40,7 +41,13 @@
                             "type": "string"
                         }
                     }
-                }
+                },
+                "required": [
+                    "name",
+                    "ver",
+                    "path",
+                    "args"
+                ]
             }
         }
     }

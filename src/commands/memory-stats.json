@@ -126,8 +126,47 @@
                     "type": "integer"
                 }
             },
+            "required": [
+                "peak.allocated",
+                "total.allocated",
+                "startup.allocated",
+                "replication.backlog",
+                "replica.fullsync.buffer",
+                "clients.slaves",
+                "clients.normal",
+                "clients.normal.shared",
+                "clients.normal.unshared",
+                "cluster.links",
+                "aof.buffer",
+                "lua.caches",
+                "script.VMs",
+                "functions.caches",
+                "overhead.db.hashtable.lut",
+                "overhead.db.hashtable.rehashing",
+                "overhead.total",
+                "hash.templates",
+                "db.dict.rehashing.count",
+                "keys.count",
+                "keys.bytes-per-key",
+                "dataset.bytes",
+                "dataset.percentage",
+                "peak.percentage",
+                "allocator.allocated",
+                "allocator.active",
+                "allocator.resident",
+                "allocator.muzzy",
+                "allocator-fragmentation.ratio",
+                "allocator-fragmentation.bytes",
+                "allocator-rss.ratio",
+                "allocator-rss.bytes",
+                "rss-overhead.ratio",
+                "rss-overhead.bytes",
+                "fragmentation",
+                "fragmentation.bytes"
+            ],
             "patternProperties": {
                 "^db\\.\\d+$": {
+                    "title": "DbStats",
                     "type": "object",
                     "properties": {
                         "overhead.hashtable.main": {
@@ -140,6 +179,11 @@
                             "type": "integer"
                         }
                     },
+                    "required": [
+                        "overhead.hashtable.main",
+                        "overhead.hashtable.expires",
+                        "overhead.hashtable.blessed"
+                    ],
                     "additionalProperties": false
                 }
             }

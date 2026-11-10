@@ -19,21 +19,27 @@
                 "state": {
                     "oneOf": [
                         {
+                            "type": "string",
                             "const": "idle"
                         },
                         {
+                            "type": "string",
                             "const": "pending"
                         },
                         {
+                            "type": "string",
                             "const": "snapshotting"
                         },
                         {
+                            "type": "string",
                             "const": "incrementing"
                         },
                         {
+                            "type": "string",
                             "const": "sealed"
                         },
                         {
+                            "type": "string",
                             "const": "failed"
                         }
                     ]
@@ -47,7 +53,13 @@
                 "end_time": {
                     "type": "integer"
                 }
-            }
+            },
+            "required": [
+                "state",
+                "error",
+                "start_time",
+                "end_time"
+            ]
         }
     }
 }

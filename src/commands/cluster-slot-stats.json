@@ -29,6 +29,7 @@
                         "type": "integer"
                     },
                     {
+                        "title": "SlotStats",
                         "type": "object",
                         "description": "Map of slot usage statistics.",
                         "additionalProperties": false,
@@ -48,7 +49,10 @@
                             "network-bytes-out": {
                                 "type": "integer"
                             }
-                        }
+                        },
+                        "required": [
+                            "key-count"
+                        ]
                     }
                 ]
             }

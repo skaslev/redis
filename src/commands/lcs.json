@@ -43,6 +43,7 @@
                     "description": "The length of the longest common subsequence when 'LEN' is given."
                 },
                 {
+                    "title": "LcsIdx",
                     "type": "object",
                     "description": "Array with the LCS length and all the ranges in both the strings when 'IDX' is given. In RESP2 this is returned as a flat array",
                     "additionalProperties": false,
@@ -50,6 +51,7 @@
                         "matches": {
                             "type": "array",
                             "items": {
+                                "title": "LcsMatch",
                                 "type": "array",
                                 "minItems": 2,
                                 "maxItems": 3,
@@ -83,7 +85,11 @@
                             "type": "integer",
                             "description": "Length of the longest common subsequence."
                         }
-                    }
+                    },
+                    "required": [
+                        "matches",
+                        "len"
+                    ]
                 }
             ]
         },

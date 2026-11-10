@@ -16,6 +16,7 @@
             "oneOf": [
                 {
                     "description": "The configuration update was successful.",
+                    "type": "string",
                     "const": "OK"
                 },
                 {

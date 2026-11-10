@@ -79,10 +79,12 @@
             "oneOf": [
                 {
                     "description": "source was copied",
+                    "type": "integer",
                     "const": 1
                 },
                 {
                     "description": "source was not copied",
+                    "type": "integer",
                     "const": 0
                 }
             ]

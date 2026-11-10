@@ -74,10 +74,12 @@
             "oneOf": [
                 {
                     "description": "key was renamed to newkey",
+                    "type": "integer",
                     "const": 1
                 },
                 {
                     "description": "new key already exists",
+                    "type": "integer",
                     "const": 0
                 }
             ]

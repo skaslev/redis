@@ -51,10 +51,12 @@
                 },
                 {
                     "description": "The key exists but has no associated expire.",
+                    "type": "integer",
                     "const": -1
                 },
                 {
                     "description": "The key does not exist.",
+                    "type": "integer",
                     "const": -2
                 }
             ]

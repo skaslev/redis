@@ -12,6 +12,7 @@
             "NOSCRIPT"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK"
         }
     }

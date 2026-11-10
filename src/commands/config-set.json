@@ -24,6 +24,7 @@
             "RESPONSE_POLICY:ALL_SUCCEEDED"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK"
         },
         "arguments": [

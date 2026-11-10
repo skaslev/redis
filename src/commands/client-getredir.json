@@ -19,10 +19,12 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "type": "integer",
                     "const": 0,
                     "description": "Not redirecting notifications to any client."
                 },
                 {
+                    "type": "integer",
                     "const": -1,
                     "description": "Client tracking is not enabled."
                 },

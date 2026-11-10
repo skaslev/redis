@@ -31,6 +31,7 @@
                             "type": "null"
                         },
                         {
+                            "title": "RunningScript",
                             "description": "a map with the information about the running script",
                             "type": "object",
                             "additionalProperties": false,
@@ -50,32 +51,44 @@
                                     "description": "the function's runtime duration in milliseconds.",
                                     "type": "integer"
                                 }
-                            }
+                            },
+                            "required": [
+                                "name",
+                                "command",
+                                "duration_ms"
+                            ]
                         }
                     ]
                 },
                 "engines": {
                     "description": "A map when each entry in the map represent a single engine.",
                     "type": "object",
-                    "patternProperties": {
-                        "^.*$": {
-                            "description": "Engine map contains statistics about the engine",
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                                "libraries_count": {
-                                    "description": "number of libraries",
-                                    "type": "integer"
-                                },
-                                "functions_count": {
-                                    "description": "number of functions",
-                                    "type": "integer"
-                                }
+                    "additionalProperties": {
+                        "title": "EngineStats",
+                        "description": "Engine map contains statistics about the engine",
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "libraries_count": {
+                                "description": "number of libraries",
+                                "type": "integer"
+                            },
+                            "functions_count": {
+                                "description": "number of functions",
+                                "type": "integer"
                             }
-                        }
+                        },
+                        "required": [
+                            "libraries_count",
+                            "functions_count"
+                        ]
                     }
                 }
-            }
+            },
+            "required": [
+                "running_script",
+                "engines"
+            ]
         }
     }
 }

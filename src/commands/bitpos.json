@@ -98,6 +98,7 @@
                 },
                 {
                     "description": "In case the `bit` argument is 1 and the string is empty or composed of just zero bytes",
+                    "type": "integer",
                     "const": -1
                 }
             ]

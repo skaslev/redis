@@ -19,6 +19,7 @@
         "reply_schema": {
             "type": "array",
             "items": {
+                "title": "Library",
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -34,6 +35,7 @@
                         "description": "the list of functions in the library",
                         "type": "array",
                         "items": {
+                            "title": "Function",
                             "type": "object",
                             "additionalProperties": false,
                             "properties": {
@@ -59,14 +61,24 @@
                                         "type": "string"
                                     }
                                 }
-                            }
+                            },
+                            "required": [
+                                "name",
+                                "description",
+                                "flags"
+                            ]
                         }
                     },
                     "library_code": {
                         "description": "the library's source code (when given the WITHCODE modifier)",
                         "type": "string"
                     }
-                }
+                },
+                "required": [
+                    "library_name",
+                    "engine",
+                    "functions"
+                ]
             }
         },
         "arguments": [

@@ -15,6 +15,7 @@
             "oneOf": [
                 {
                     "description": "The simulated flag was set.",
+                    "type": "string",
                     "const": "OK"
                 },
                 {

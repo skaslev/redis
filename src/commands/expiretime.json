@@ -41,10 +41,12 @@
                     "minimum": 0
                 },
                 {
+                    "type": "integer",
                     "const": -1,
                     "description": "The key exists but has no associated expiration time."
                 },
                 {
+                    "type": "integer",
                     "const": -2,
                     "description": "The key does not exist."
                 }

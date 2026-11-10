@@ -58,6 +58,7 @@
             "type": "array",
             "uniqueItems": true,
             "items": {
+                "title": "ConsumerInfo",
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -73,7 +74,13 @@
                     "inactive": {
                         "type": "integer"
                     }
-                }
+                },
+                "required": [
+                    "name",
+                    "pending",
+                    "idle",
+                    "inactive"
+                ]
             }
         }
     }

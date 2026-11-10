@@ -67,6 +67,7 @@
                 },
                 {
                     "description": "`GET` not given: The key was set.",
+                    "type": "string",
                     "const": "OK"
                 },
                 {

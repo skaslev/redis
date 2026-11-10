@@ -56,6 +56,7 @@
                     "description": "Fields and their values. Returned in case `COUNT` and `WITHVALUES` were used. In RESP2 this is returned as a flat array.",
                     "type": "array",
                     "items": {
+                        "title": "FieldValue",
                         "type": "array",
                         "minItems": 2,
                         "maxItems": 2,

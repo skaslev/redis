@@ -38,10 +38,12 @@
             "oneOf": [
                 {
                     "description": "The field is a new field in the hash and value was set.",
+                    "type": "integer",
                     "const": 0
                 },
                 {
                     "description": "The field already exists in the hash and no operation was performed.",
+                    "type": "integer",
                     "const": 1
                 }
             ]

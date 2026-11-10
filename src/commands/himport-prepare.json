@@ -14,6 +14,7 @@
             "HASH"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK"
         },
         "command_tips": [

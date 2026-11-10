@@ -53,6 +53,7 @@
                     "type": "array",
                     "uniqueItems": true,
                     "items": {
+                        "title": "MemberScore",
                         "type": "array",
                         "minItems": 2,
                         "maxItems": 2,

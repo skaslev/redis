@@ -20,10 +20,12 @@
                 {
                     "oneOf": [
                         {
+                            "type": "integer",
                             "const": 0,
                             "description": "Master is up."
                         },
                         {
+                            "type": "integer",
                             "const": 1,
                             "description": "Master is down."
                         }

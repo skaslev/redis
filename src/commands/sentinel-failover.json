@@ -12,6 +12,7 @@
             "ONLY_SENTINEL"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK",
             "description": "Force a fail over as if the master was not reachable, and without asking for agreement to other Sentinels."
         },

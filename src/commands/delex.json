@@ -39,14 +39,17 @@
             "oneOf": [
                 {
                     "description": "The key exists but holds a non-string value",
+                    "type": "string",
                     "const": "WRONGTYPE"
                 },
                 {
                     "description": "The key does not exist or the specified condition was not met.",
+                    "type": "integer",
                     "const": 0
                 },
                 {
                     "description": "The key was deleted.",
+                    "type": "integer",
                     "const": 1
                 }
             ]

@@ -18,6 +18,7 @@
             "description": "an array of cluster links and their attributes",
             "type": "array",
             "items": {
+                "title": "ClusterLink",
                 "type": "object",
                 "properties": {
                     "direction": {
@@ -25,10 +26,12 @@
                         "oneOf": [
                             {
                                 "description": "connection initiated from peer",
+                                "type": "string",
                                 "const": "from"
                             },
                             {
                                 "description": "connection initiated to peer",
+                                "type": "string",
                                 "const": "to"
                             }
                         ]
@@ -54,7 +57,15 @@
                         "type": "integer"
                     }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "required": [
+                    "direction",
+                    "node",
+                    "create-time",
+                    "events",
+                    "send-buffer-allocated",
+                    "send-buffer-used"
+                ]
             }
         }
     }

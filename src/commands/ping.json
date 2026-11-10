@@ -20,6 +20,7 @@
         "reply_schema": {
             "anyOf": [
                 {
+                    "type": "string",
                     "const": "PONG",
                     "description": "Default reply."
                 },

@@ -43,14 +43,17 @@
                 "oneOf": [
                     {
                         "description": "The field does not exist.",
+                        "type": "integer",
                         "const": -2
                     },
                     {
                         "description": "The field exists but has no associated expire.",
+                        "type": "integer",
                         "const": -1
                     },
                     {
                         "description": "Expiration time was removed",
+                        "type": "integer",
                         "const": 1
                     }
                 ]

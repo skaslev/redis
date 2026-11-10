@@ -13,6 +13,7 @@
             "NO_MULTI"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK"
         }
     }

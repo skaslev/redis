@@ -42,10 +42,12 @@
                 },
                 {
                     "description": "in case key doesn't exist.",
+                    "type": "integer",
                     "const": 0
                 },
                 {
                     "description": "when the pivot wasn't found.",
+                    "type": "integer",
                     "const": -1
                 }
             ]

@@ -33,6 +33,7 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "title": "AclUser",
                     "description": "a set of ACL rule definitions for the user",
                     "type": "object",
                     "additionalProperties": false,
@@ -64,6 +65,7 @@
                         "selectors": {
                             "type": "array",
                             "items": {
+                                "title": "AclSelector",
                                 "type": "object",
                                 "additionalProperties": false,
                                 "properties": {
@@ -76,10 +78,23 @@
                                     "channels": {
                                         "type": "string"
                                     }
-                                }
+                                },
+                                "required": [
+                                    "commands",
+                                    "keys",
+                                    "channels"
+                                ]
                             }
                         }
-                    }
+                    },
+                    "required": [
+                        "flags",
+                        "passwords",
+                        "commands",
+                        "keys",
+                        "channels",
+                        "selectors"
+                    ]
                 },
                 {
                     "description": "If user does not exist",

@@ -74,6 +74,7 @@
         ],
         "reply_schema": {
             "description": "if the client was successfully put into or taken out of tracking mode",
+            "type": "string",
             "const": "OK"
         }
     }

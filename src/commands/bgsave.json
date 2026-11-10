@@ -29,9 +29,11 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "type": "string",
                     "const": "Background saving started"
                 },
                 {
+                    "type": "string",
                     "const": "Background saving scheduled"
                 }
             ]

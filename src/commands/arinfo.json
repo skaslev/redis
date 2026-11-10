@@ -84,7 +84,16 @@
                     "type": "number",
                     "description": "Average capacity of sparse slices (FULL only)."
                 }
-            }
+            },
+            "required": [
+                "count",
+                "len",
+                "next-insert-index",
+                "slices",
+                "directory-size",
+                "super-dir-entries",
+                "slice-size"
+            ]
         },
         "arguments": [
             {

@@ -35,6 +35,7 @@
                     "type": "string"
                 },
                 "proto": {
+                    "type": "integer",
                     "const": 3
                 },
                 "id": {
@@ -49,6 +50,7 @@
                 "modules": {
                     "type": "array",
                     "items": {
+                        "title": "ModuleInfo",
                         "type": "object",
                         "additionalProperties": false,
                         "properties": {
@@ -67,10 +69,24 @@
                                     "type": "string"
                                 }
                             }
-                        }
+                        },
+                        "required": [
+                            "name",
+                            "ver",
+                            "path",
+                            "args"
+                        ]
                     }
                 }
-            }
+            },
+            "required": [
+                "server",
+                "version",
+                "proto",
+                "id",
+                "mode",
+                "modules"
+            ]
         },
         "arguments": [
             {

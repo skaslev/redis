@@ -31,10 +31,12 @@
                 "oneOf": [
                     {
                         "description": "sha1 hash exists in script cache",
+                        "type": "integer",
                         "const": 1
                     },
                     {
                         "description": "sha1 hash does not exist in script cache",
+                        "type": "integer",
                         "const": 0
                     }
                 ]
