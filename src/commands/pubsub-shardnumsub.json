@@ -22,7 +22,19 @@
         ],
         "reply_schema": {
             "description": "the number of subscribers per shard channel, each even element (including 0th) is channel name, each odd element is the number of subscribers",
-            "type": "array"
+            "type": "array",
+            "items": {
+                "oneOf": [
+                    {
+                        "description": "channel name",
+                        "type": "string"
+                    },
+                    {
+                        "description": "number of subscribers",
+                        "type": "integer"
+                    }
+                ]
+            }
         }
     }
 }

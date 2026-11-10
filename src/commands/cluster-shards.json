@@ -19,6 +19,7 @@
             "description": "a nested list of a map of hash ranges and shard nodes describing individual shards",
             "type": "array",
             "items": {
+                "title": "Shard",
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -33,6 +34,7 @@
                         "description": "nodes that handle these slot ranges",
                         "type": "array",
                         "items": {
+                            "title": "ShardNode",
                             "type": "object",
                             "additionalProperties": false,
                             "properties": {
@@ -55,11 +57,14 @@
                                     "type": "string"
                                 },
                                 "role": {
+                                    "title": "NodeRole",
                                     "oneOf": [
                                         {
+                                            "type": "string",
                                             "const": "master"
                                         },
                                         {
+                                            "type": "string",
                                             "const": "replica"
                                         }
                                     ]
@@ -68,22 +73,38 @@
                                     "type": "integer"
                                 },
                                 "health": {
+                                    "title": "NodeHealth",
                                     "oneOf": [
                                         {
+                                            "type": "string",
                                             "const": "fail"
                                         },
                                         {
+                                            "type": "string",
                                             "const": "loading"
                                         },
                                         {
+                                            "type": "string",
                                             "const": "online"
                                         }
                                     ]
                                 }
-                            }
+                            },
+                            "required": [
+                                "id",
+                                "ip",
+                                "endpoint",
+                                "role",
+                                "replication-offset",
+                                "health"
+                            ]
                         }
                     }
-                }
+                },
+                "required": [
+                    "slots",
+                    "nodes"
+                ]
             }
         }
     }

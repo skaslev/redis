@@ -36,10 +36,12 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "type": "integer",
                     "const": 0,
                     "description": "Key does not exist or does not have an associated timeout."
                 },
                 {
+                    "type": "integer",
                     "const": 1,
                     "description": "The timeout has been removed."
                 }

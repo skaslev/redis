@@ -49,10 +49,12 @@
             "oneOf": [
                 {
                     "description": "key was moved",
+                    "type": "integer",
                     "const": 1
                 },
                 {
                     "description": "key wasn't moved",
+                    "type": "integer",
                     "const": 0
                 }
             ]

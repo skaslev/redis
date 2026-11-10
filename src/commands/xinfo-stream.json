@@ -58,6 +58,7 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "title": "StreamInfo",
                     "description": "Summary form, in case `FULL` was not given.",
                     "type": "object",
                     "additionalProperties": false,
@@ -175,9 +176,28 @@
                                 }
                             ]
                         }
-                    }
+                    },
+                    "required": [
+                        "length",
+                        "radix-tree-keys",
+                        "radix-tree-nodes",
+                        "last-generated-id",
+                        "max-deleted-entry-id",
+                        "recorded-first-entry-id",
+                        "entries-added",
+                        "idmp-duration",
+                        "idmp-maxsize",
+                        "pids-tracked",
+                        "iids-tracked",
+                        "iids-added",
+                        "iids-duplicates",
+                        "groups",
+                        "first-entry",
+                        "last-entry"
+                    ]
                 },
                 {
+                    "title": "StreamInfoFull",
                     "description": "Extended form, in case `FULL` was given.",
                     "type": "object",
                     "additionalProperties": false,
@@ -242,6 +262,7 @@
                             "type": "array",
                             "uniqueItems": true,
                             "items": {
+                                "title": "StreamEntry",
                                 "type": "array",
                                 "minItems": 2,
                                 "maxItems": 2,
@@ -264,6 +285,7 @@
                         "groups": {
                             "type": "array",
                             "items": {
+                                "title": "StreamGroup",
                                 "type": "object",
                                 "additionalProperties": false,
                                 "properties": {
@@ -310,6 +332,7 @@
                                         "description": "data about all of the unacknowledged entries",
                                         "type": "array",
                                         "items": {
+                                            "title": "GroupPendingEntry",
                                             "type": "array",
                                             "minItems": 4,
                                             "maxItems": 4,
@@ -338,6 +361,7 @@
                                         "description": "data about all of the consumers of the group",
                                         "type": "array",
                                         "items": {
+                                            "title": "StreamConsumer",
                                             "type": "object",
                                             "additionalProperties": false,
                                             "properties": {
@@ -363,6 +387,7 @@
                                                     "description": "data about the unacknowledged entries",
                                                     "type": "array",
                                                     "items": {
+                                                        "title": "ConsumerPendingEntry",
                                                         "type": "array",
                                                         "minItems": 3,
                                                         "maxItems": 3,
@@ -383,13 +408,47 @@
                                                         ]
                                                     }
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "active-time",
+                                                "name",
+                                                "seen-time",
+                                                "pel-count",
+                                                "pending"
+                                            ]
                                         }
                                     }
-                                }
+                                },
+                                "required": [
+                                    "name",
+                                    "last-delivered-id",
+                                    "entries-read",
+                                    "lag",
+                                    "pel-count",
+                                    "nacked-count",
+                                    "pending",
+                                    "consumers"
+                                ]
                             }
                         }
-                    }
+                    },
+                    "required": [
+                        "length",
+                        "radix-tree-keys",
+                        "radix-tree-nodes",
+                        "last-generated-id",
+                        "max-deleted-entry-id",
+                        "recorded-first-entry-id",
+                        "entries-added",
+                        "idmp-duration",
+                        "idmp-maxsize",
+                        "pids-tracked",
+                        "iids-tracked",
+                        "iids-added",
+                        "iids-duplicates",
+                        "entries",
+                        "groups"
+                    ]
                 }
             ]
         },

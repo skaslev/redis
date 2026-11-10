@@ -15,6 +15,7 @@
             "type": "array",
             "description": "List of pending scripts.",
             "items": {
+                "title": "SentinelScript",
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -45,7 +46,13 @@
                         "type": "string",
                         "description": "Number of times we tried to execute the script."
                     }
-                }
+                },
+                "required": [
+                    "argv",
+                    "flags",
+                    "pid",
+                    "retry-num"
+                ]
             }
         }
     }

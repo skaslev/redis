@@ -20,11 +20,13 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "title": "MasterRole",
                     "type": "array",
                     "minItems": 3,
                     "maxItems": 3,
                     "items": [
                         {
+                            "type": "string",
                             "const": "master"
                         },
                         {
@@ -57,11 +59,13 @@
                     ]
                 },
                 {
+                    "title": "ReplicaRole",
                     "type": "array",
                     "minItems": 5,
                     "maxItems": 5,
                     "items": [
                         {
+                            "type": "string",
                             "const": "slave"
                         },
                         {
@@ -73,34 +77,42 @@
                             "type": "integer"
                         },
                         {
+                            "title": "ReplicaLinkState",
                             "description": "state of the replication from the point of view of the master",
                             "oneOf": [
                                 {
                                     "description": "the instance is in handshake with its master",
+                                    "type": "string",
                                     "const": "handshake"
                                 },
                                 {
                                     "description": "the instance in not active",
+                                    "type": "string",
                                     "const": "none"
                                 },
                                 {
                                     "description": "the instance needs to connect to its master",
+                                    "type": "string",
                                     "const": "connect"
                                 },
                                 {
                                     "description": "the master-replica connection is in progress",
+                                    "type": "string",
                                     "const": "connecting"
                                 },
                                 {
                                     "description": "the master and replica are trying to perform the synchronization",
+                                    "type": "string",
                                     "const": "sync"
                                 },
                                 {
                                     "description": "the replica is online",
+                                    "type": "string",
                                     "const": "connected"
                                 },
                                 {
                                     "description": "instance state is unknown",
+                                    "type": "string",
                                     "const": "unknown"
                                 }
                             ]
@@ -112,11 +124,13 @@
                     ]
                 },
                 {
+                    "title": "SentinelRole",
                     "type": "array",
                     "minItems": 2,
                     "maxItems": 2,
                     "items": [
                         {
+                            "type": "string",
                             "const": "sentinel"
                         },
                         {

@@ -21,15 +21,18 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "title": "SentinelConfig",
                     "type": "object",
                     "description": "When 'SENTINEL-CONFIG GET' is called, returns a map.",
                     "properties": {
                         "resolve-hostnames": {
                             "oneOf": [
                                 {
+                                    "type": "string",
                                     "const": "yes"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "no"
                                 }
                             ]
@@ -37,9 +40,11 @@
                         "announce-hostnames": {
                             "oneOf": [
                                 {
+                                    "type": "string",
                                     "const": "yes"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "no"
                                 }
                             ]
@@ -47,9 +52,11 @@
                         "tls-verify-hostnames": {
                             "oneOf": [
                                 {
+                                    "type": "string",
                                     "const": "yes"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "no"
                                 }
                             ]
@@ -69,21 +76,27 @@
                         "loglevel": {
                             "oneOf": [
                                 {
+                                    "type": "string",
                                     "const": "debug"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "verbose"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "notice"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "warning"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "nothing"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "unknown"
                                 }
                             ]
@@ -92,6 +105,7 @@
                     "additionalProperties": false
                 },
                 {
+                    "type": "string",
                     "const": "OK",
                     "description": "When 'SENTINEL-CONFIG SET' is called, returns OK on success."
                 }

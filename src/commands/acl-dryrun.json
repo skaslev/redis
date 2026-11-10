@@ -18,6 +18,7 @@
         "reply_schema": {
             "anyOf": [
                 {
+                    "type": "string",
                     "const": "OK",
                     "description": "The given user may successfully execute the given command."
                 },

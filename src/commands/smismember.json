@@ -40,10 +40,12 @@
             "items": {
                 "oneOf": [
                     {
+                        "type": "integer",
                         "const": 0,
                         "description": "Not a member of the set or the key does not exist."
                     },
                     {
+                        "type": "integer",
                         "const": 1,
                         "description": "A member of the set."
                     }

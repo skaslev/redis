@@ -105,10 +105,12 @@
             "oneOf": [
                 {
                     "description": "Reply to CLUSTER SYNCSLOTS SYNC, returns special RDB channel sync response.",
+                    "type": "string",
                     "const": "RDBCHANNELSYNCSLOTS"
                 },
                 {
                     "description": "Reply to CLUSTER SYNCSLOTS CONF and other subcommands.",
+                    "type": "string",
                     "const": "OK"
                 }
             ]

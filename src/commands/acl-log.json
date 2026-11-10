@@ -26,6 +26,7 @@
                     "description": "In case `RESET` was not given, a list of recent ACL security events.",
                     "type": "array",
                     "items": {
+                        "title": "AclLogEntry",
                         "type": "object",
                         "additionalProperties": false,
                         "properties": {
@@ -59,10 +60,23 @@
                             "timestamp-last-updated": {
                                 "type": "integer"
                             }
-                        }
+                        },
+                        "required": [
+                            "count",
+                            "reason",
+                            "context",
+                            "object",
+                            "username",
+                            "age-seconds",
+                            "client-info",
+                            "entry-id",
+                            "timestamp-created",
+                            "timestamp-last-updated"
+                        ]
                     }
                 },
                 {
+                    "type": "string",
                     "const": "OK",
                     "description": "In case `RESET` was given, OK indicates ACL log was cleared."
                 }

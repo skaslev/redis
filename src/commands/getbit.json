@@ -37,9 +37,11 @@
             "description": "The bit value stored at offset.",
             "oneOf": [
                 {
+                    "type": "integer",
                     "const": 0
                 },
                 {
+                    "type": "integer",
                     "const": 1
                 }
             ]

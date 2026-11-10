@@ -92,14 +92,17 @@
                 "oneOf": [
                     {
                         "description": "The id does not exist in the provided stream key.",
+                        "type": "integer",
                         "const": -1
                     },
                     {
                         "description": "Entry was acknowledged and deleted from the stream.",
+                        "type": "integer",
                         "const": 1
                     },
                     {
                         "description": "Entry was acknowledged but not deleted, there are still dangling references.",
+                        "type": "integer",
                         "const": 2
                     }
                 ]

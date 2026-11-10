@@ -48,9 +48,11 @@
             "description": "The number of destroyed consumer groups (0 or 1)",
             "oneOf": [
                 {
+                    "type": "integer",
                     "const": 1
                 },
                 {
+                    "type": "integer",
                     "const": 0
                 }
             ]

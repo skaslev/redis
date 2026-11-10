@@ -38,10 +38,12 @@
             "oneOf": [
                 {
                     "description": "No field was set (due to FXX or FNX flags).",
+                    "type": "integer",
                     "const": 0
                 },
                 {
                     "description": "All the fields were set.",
+                    "type": "integer",
                     "const": 1
                 }
             ]

@@ -129,6 +129,7 @@
                     "items": [
                         {
                             "description": "Total number of pending messages",
+                            "type": "integer",
                             "const": 0
                         },
                         {

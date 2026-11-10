@@ -23,40 +23,50 @@
                 "flags": {
                     "type": "array",
                     "items": {
+                        "title": "TrackingFlag",
                         "oneOf": [
                             {
+                                "type": "string",
                                 "const": "off",
                                 "description": "The connection isn't using server assisted client side caching."
                             },
                             {
+                                "type": "string",
                                 "const": "on",
                                 "description": "Server assisted client side caching is enabled for the connection."
                             },
                             {
+                                "type": "string",
                                 "const": "bcast",
                                 "description": "The client uses broadcasting mode."
                             },
                             {
+                                "type": "string",
                                 "const": "optin",
                                 "description": "The client does not cache keys by default."
                             },
                             {
+                                "type": "string",
                                 "const": "optout",
                                 "description": "The client caches keys by default."
                             },
                             {
+                                "type": "string",
                                 "const": "caching-yes",
                                 "description": "The next command will cache keys (exists only together with optin)."
                             },
                             {
+                                "type": "string",
                                 "const": "caching-no",
                                 "description": "The next command won't cache keys (exists only together with optout)."
                             },
                             {
+                                "type": "string",
                                 "const": "noloop",
                                 "description": "The client isn't notified about keys modified by itself."
                             },
                             {
+                                "type": "string",
                                 "const": "broken_redirect",
                                 "description": "The client ID used for redirection isn't valid anymore."
                             }
@@ -74,7 +84,12 @@
                         "type": "string"
                     }
                 }
-            }
+            },
+            "required": [
+                "flags",
+                "redirect",
+                "prefixes"
+            ]
         }
     }
 }

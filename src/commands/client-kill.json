@@ -157,6 +157,7 @@
             "oneOf": [
                 {
                     "description": "when called in 3 argument format",
+                    "type": "string",
                     "const": "OK"
                 },
                 {

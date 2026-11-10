@@ -17,6 +17,7 @@
             "CONNECTION"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK",
             "description": "When called with either OFF or SKIP subcommands, no reply is made. When called with ON, reply is OK."
         },

@@ -15,6 +15,7 @@
             "REQUEST_POLICY:SPECIAL"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK"
         }
     }

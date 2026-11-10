@@ -43,10 +43,12 @@
             "oneOf": [
                 {
                     "description": "The key was set.",
+                    "type": "integer",
                     "const": 0
                 },
                 {
                     "description": "The key was not set.",
+                    "type": "integer",
                     "const": 1
                 }
             ]

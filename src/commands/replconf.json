@@ -17,6 +17,7 @@
             "ALLOW_BUSY"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK"
         }
     }

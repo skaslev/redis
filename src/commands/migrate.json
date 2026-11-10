@@ -80,10 +80,12 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "type": "string",
                     "const": "OK",
                     "description": "Success."
                 },
                 {
+                    "type": "string",
                     "const": "NOKEY",
                     "description": "No keys were found in the source instance."
                 }

@@ -42,6 +42,7 @@
         "reply_schema": {
             "type": "array",
             "items": {
+                "title": "ConsumerGroupInfo",
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -78,7 +79,15 @@
                             }
                         ]
                     }
-                }
+                },
+                "required": [
+                    "name",
+                    "consumers",
+                    "pending",
+                    "last-delivered-id",
+                    "entries-read",
+                    "lag"
+                ]
             }
         },
         "arguments": [

@@ -20,10 +20,12 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "type": "integer",
                     "const": 0,
                     "description": "if the client was unblocked successfully"
                 },
                 {
+                    "type": "integer",
                     "const": 1,
                     "description": "if the client wasn't unblocked"
                 }

@@ -43,10 +43,12 @@
                 "oneOf": [
                     {
                         "description": "The member does not exist.",
+                        "type": "integer",
                         "const": -2
                     },
                     {
                         "description": "The member exists but has no associated expire.",
+                        "type": "integer",
                         "const": -1
                     },
                     {

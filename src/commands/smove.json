@@ -55,10 +55,12 @@
         "reply_schema": {
             "oneOf": [
                 {
+                    "type": "integer",
                     "const": 1,
                     "description": "Element is moved."
                 },
                 {
+                    "type": "integer",
                     "const": 0,
                     "description": "The element is not a member of source and no operation was performed."
                 }

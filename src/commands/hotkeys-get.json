@@ -22,6 +22,7 @@
                     "description": "Array of maps with various metrics (tracking-active, sample-ratio, selected-slots, time/network statistics), collection info (collection-start-time-unix-ms, collection-duration-ms, total-cpu-time-user-ms, total-cpu-time-sys-ms, total-net-bytes), and the requested lists of Top-K hotkeys (available metrics: by-cpu-time-us, by-net-bytes) where at most K hotkeys are returned.",
                     "type": "array",
                     "items": {
+                        "title": "HotkeysReport",
                         "type": "object",
                         "properties": {
                             "tracking-active": {
@@ -117,7 +118,16 @@
                                 "description": "Flat array of key-value pairs (key1, bytes1, key2, bytes2, ...) for top-K hotkeys by network bytes (only present when NET tracking is enabled)."
                             }
                         },
-                        "additionalProperties": false
+                        "additionalProperties": false,
+                        "required": [
+                            "tracking-active",
+                            "sample-ratio",
+                            "selected-slots",
+                            "all-commands-all-slots-us",
+                            "net-bytes-all-commands-all-slots",
+                            "collection-start-time-unix-ms",
+                            "collection-duration-ms"
+                        ]
                     }
                 },
                 {

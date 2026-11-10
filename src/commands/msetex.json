@@ -42,10 +42,12 @@
             "oneOf": [
                 {
                     "description": "No key was set (at least one key failed).",
+                    "type": "integer",
                     "const": 0
                 },
                 {
                     "description": "All the keys were set.",
+                    "type": "integer",
                     "const": 1
                 }
             ]

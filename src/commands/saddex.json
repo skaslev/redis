@@ -38,10 +38,12 @@
             "oneOf": [
                 {
                     "description": "No member was added, updated or deleted (MNX/MXX condition not met, or nothing changed).",
+                    "type": "integer",
                     "const": 0
                 },
                 {
                     "description": "At least one member was added, updated or deleted.",
+                    "type": "integer",
                     "const": 1
                 }
             ]

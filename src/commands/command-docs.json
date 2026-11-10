@@ -21,9 +21,12 @@
         "reply_schema": {
             "description": "A map where each key is a command name, and each value is the documentary information",
             "type": "object",
-            "additionalProperties": false,
-            "patternProperties": {
-                "^.*$": {
+            "additionalProperties": {
+                "$ref": "#/$defs/commandDoc"
+            },
+            "$defs": {
+                "commandDoc": {
+                    "title": "CommandDoc",
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
@@ -36,66 +39,87 @@
                             "type": "string"
                         },
                         "group": {
+                            "title": "CommandGroup",
                             "description": "the functional group to which the command belongs",
                             "oneOf": [
                                 {
+                                    "type": "string",
                                     "const": "bitmap"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "cluster"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "connection"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "generic"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "geo"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "hash"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "hyperloglog"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "array"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "list"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "module"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "pubsub"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "scripting"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "sentinel"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "server"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "set"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "sorted-set"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "stream"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "string"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "transactions"
                                 },
                                 {
+                                    "type": "string",
                                     "const": "rate_limit"
                                 }
                             ]
@@ -111,12 +135,15 @@
                             "description": "an array of documentation flags",
                             "type": "array",
                             "items": {
+                                "title": "DocFlag",
                                 "oneOf": [
                                     {
+                                        "type": "string",
                                         "description": "the command is deprecated.",
                                         "const": "deprecated"
                                     },
                                     {
+                                        "type": "string",
                                         "description": "a system command that isn't meant to be called by users.",
                                         "const": "syscmd"
                                     }
@@ -135,6 +162,7 @@
                             "description": "an array of historical notes describing changes to the command's behavior or arguments.",
                             "type": "array",
                             "items": {
+                                "title": "HistoryEntry",
                                 "type": "array",
                                 "minItems": 2,
                                 "maxItems": 2,
@@ -154,43 +182,7 @@
                             "description": "an array of maps that describe the command's arguments.",
                             "type": "array",
                             "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "name": {
-                                        "type": "string"
-                                    },
-                                    "type": {
-                                        "type": "string"
-                                    },
-                                    "display_text": {
-                                        "type": "string"
-                                    },
-                                    "key_spec_index": {
-                                        "type": "integer"
-                                    },
-                                    "token": {
-                                        "type": "string"
-                                    },
-                                    "summary": {
-                                        "type": "string"
-                                    },
-                                    "since": {
-                                        "type": "string"
-                                    },
-                                    "deprecated_since": {
-                                        "type": "string"
-                                    },
-                                    "flags": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "string"
-                                        }
-                                    },
-                                    "arguments": {
-                                        "type": "array"
-                                    }
-                                }
+                                "$ref": "#/$defs/argument"
                             }
                         },
                         "reply_schema": {
@@ -199,9 +191,62 @@
                         },
                         "subcommands": {
                             "description": "A map where each key is a subcommand, and each value is the documentary information",
-                            "$ref": "#"
+                            "type": "object",
+                            "additionalProperties": {
+                                "$ref": "#/$defs/commandDoc"
+                            }
                         }
-                    }
+                    },
+                    "required": [
+                        "group"
+                    ]
+                },
+                "argument": {
+                    "title": "CommandArgument",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "name": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "type": "string"
+                        },
+                        "display_text": {
+                            "type": "string"
+                        },
+                        "key_spec_index": {
+                            "type": "integer"
+                        },
+                        "token": {
+                            "type": "string"
+                        },
+                        "summary": {
+                            "type": "string"
+                        },
+                        "since": {
+                            "type": "string"
+                        },
+                        "deprecated_since": {
+                            "type": "string"
+                        },
+                        "flags": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "arguments": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/$defs/argument"
+                            }
+                        }
+                    },
+                    "required": [
+                        "name",
+                        "type"
+                    ]
                 }
             }
         },

@@ -21,6 +21,7 @@
             "CONNECTION"
         ],
         "reply_schema": {
+            "type": "string",
             "const": "OK"
         },
         "arguments": [

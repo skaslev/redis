@@ -36,10 +36,12 @@
             "oneOf": [
                 {
                     "description": "The hash does not contain the field, or key does not exist.",
+                    "type": "integer",
                     "const": 0
                 },
                 {
                     "description": "The hash contains the field.",
+                    "type": "integer",
                     "const": 1
                 }
             ]
