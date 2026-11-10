@@ -45,10 +45,14 @@ test "SENTINEL INFO CACHE returns the cached info" {
     assert_morethan_equal [llength $res] 2
     assert_equal "mymaster" [lindex $res 0]
 
+    # A pair of INFO age and INFO for the master, then one for each replica
     set res [lindex $res 1]
     assert_morethan_equal [llength $res] 2
-    assert_morethan [lindex $res 0] 0
-    assert_match "*# Server*" [lindex $res 1]
+    foreach pair $res {
+        assert_equal 2 [llength $pair]
+        assert_morethan_equal [lindex $pair 0] 0
+    }
+    assert_match "*# Server*" [lindex $res 0 1]
 }
 
 test "SENTINEL PENDING-SCRIPTS returns the information about pending scripts" {
